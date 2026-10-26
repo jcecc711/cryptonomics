@@ -3,11 +3,17 @@
 Order dicts use Binance's shape: orderId, status, executedQty, cummulativeQuoteQty.
 """
 import itertools
+import time
 from decimal import Decimal
 
 from .binanceus import BinanceError
 
 FINAL = {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}
+TAG = "cnx"  # client order id prefix: marks orders placed by this bot
+
+
+def _client_id():
+    return f"{TAG}{time.time_ns() // 1000}"
 
 
 class LiveBroker:
@@ -22,10 +28,15 @@ class LiveBroker:
         return b.get(self.quote, Decimal(0)), b.get(self.base, Decimal(0))
 
     def place_maker(self, side, qty, price):
-        return self.c.new_order(self.symbol, side, "LIMIT_MAKER", qty, price)
+        return self.c.new_order(self.symbol, side, "LIMIT_MAKER", qty, price, client_id=_client_id())
 
     def place_ioc(self, side, qty, price):
-        return self.c.new_order(self.symbol, side, "LIMIT", qty, price, tif="IOC")
+        return self.c.new_order(self.symbol, side, "LIMIT", qty, price, tif="IOC", client_id=_client_id())
+
+    def cancel_leftovers(self):
+        """Cancel orders this bot left open (e.g. after a crash). Manual orders are untouched."""
+        left = [o for o in self.c.open_orders(self.symbol) if o.get("clientOrderId", "").startswith(TAG)]
+        return [self.cancel(o["orderId"]) for o in left]
 
     def status(self, order_id):
         return self.c.get_order(self.symbol, order_id)
@@ -96,6 +107,9 @@ class PaperBroker:
              "status": "NEW", "executedQty": "0", "cummulativeQuoteQty": "0"}
         self.orders[oid] = o
         return o
+
+    def cancel_leftovers(self):
+        return []  # paper orders don't outlive the process
 
     def place_maker(self, side, qty, price):
         bid, ask = self.book()

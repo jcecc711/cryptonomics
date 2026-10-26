@@ -45,6 +45,8 @@ def summary(sig, trade, price):
 
 
 def run_once(cfg, client, broker, store):
+    for o in broker.cancel_leftovers():
+        log.warning("cancelled leftover order %s (%s, filled %s)", o["orderId"], o["status"], o["executedQty"])
     candles = client.klines(cfg.symbol, cfg.interval)
     sig = strategy.evaluate(candles, cfg.di_len, cfg.adx_smoothing)
     trade = store.current_trade()

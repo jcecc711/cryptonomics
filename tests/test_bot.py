@@ -98,6 +98,28 @@ class TestFilters(unittest.TestCase):
         self.assertTrue(f.ok(Decimal("0.0001"), Decimal("50000")))
 
 
+class TestLiveBroker(unittest.TestCase):
+    def test_cancels_only_its_own_leftover_orders(self):
+        from bot.broker import LiveBroker
+
+        class C:
+            cancelled = []
+
+            def open_orders(self, symbol):
+                return [{"orderId": 1, "clientOrderId": "cnx123"}, {"orderId": 2, "clientOrderId": "web_manual"}]
+
+            def cancel(self, symbol, oid):
+                self.cancelled.append(oid)
+
+            def get_order(self, symbol, oid):
+                return {"orderId": oid, "status": "CANCELED", "executedQty": "0"}
+
+        c = C()
+        out = LiveBroker(c, "BTCUSDT", "BTC", "USDT").cancel_leftovers()
+        self.assertEqual(c.cancelled, [1])
+        self.assertEqual([o["orderId"] for o in out], [1])
+
+
 class TestStrategy(unittest.TestCase):
     def test_bot_trades_the_same_days_as_the_backtest(self):
         """Feeding decide() one candle at a time reproduces bench/exits.py exactly."""

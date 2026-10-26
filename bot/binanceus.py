@@ -126,5 +126,8 @@ class BinanceUS:
     def cancel(self, symbol, order_id):
         return self._request("DELETE", "/api/v3/order", {"symbol": symbol, "orderId": order_id}, signed=True)
 
+    def open_orders(self, symbol):
+        return self._request("GET", "/api/v3/openOrders", {"symbol": symbol}, signed=True)
+
     def my_trades(self, symbol, order_id):
         return self._request("GET", "/api/v3/myTrades", {"symbol": symbol, "orderId": order_id}, signed=True)
