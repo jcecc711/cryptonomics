@@ -39,3 +39,41 @@ def fetch(symbol="BTCUSDT", interval="1h", refresh=False):
     df = df[df.index + pd.Timedelta(milliseconds=INTERVAL_MS[interval]) <= pd.Timestamp.utcnow().tz_localize(None)]
     df.to_csv(path)
     return df
+
+
+CB_API = "https://api.exchange.coinbase.com/products/{}/candles"
+
+
+def fetch_coinbase(product="BTC-USD", interval="1d", start="2015-01-01", refresh=False):
+    """Long-history candles from Coinbase (back to 2015) for higher-timeframe context."""
+    DATA_DIR.mkdir(exist_ok=True)
+    path = DATA_DIR / f"cb_{product}_{interval}.csv"
+    if path.exists() and not refresh:
+        return pd.read_csv(path, index_col="time", parse_dates=True)
+
+    step = INTERVAL_MS[interval] // 1000
+    t = pd.Timestamp(start)
+    end = pd.Timestamp.utcnow().tz_localize(None)
+    rows = []
+    while t < end:
+        t2 = min(t + pd.Timedelta(seconds=step * 300), end)
+        r = requests.get(CB_API.format(product), timeout=30, params={
+            "granularity": step, "start": t.isoformat(), "end": t2.isoformat()})
+        r.raise_for_status()
+        rows += r.json()
+        t = t2
+        time.sleep(0.15)
+
+    df = pd.DataFrame(rows, columns=["time", "low", "high", "open", "close", "volume"])
+    df["time"] = pd.to_datetime(df["time"], unit="s")
+    df = df.drop_duplicates("time").set_index("time").sort_index()
+    df = df[["open", "high", "low", "close", "volume"]].astype(float)
+    df = df[df.index + pd.Timedelta(seconds=step) <= end]
+    df.to_csv(path)
+    return df
+
+
+def to_weekly(daily):
+    """Monday-open weekly candles, matching TradingView's weekly chart."""
+    return daily.resample("W-MON", label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
