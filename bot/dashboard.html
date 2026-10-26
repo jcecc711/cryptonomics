@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cryptonomics Bot</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #667080; --line: #e3e6ea;
+    --up: #1aa0c8; --down: #d6335a; --adx: #8a8f98; --price: #1b1f24; --good: #1f9d55; --bad: #d6335a;
+    --badge-paper: #e9eefc; --badge-paper-text: #3451b2; --badge-live: #fde8ec; --badge-live-text: #b4233f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #9aa3ae; --line: #262c34;
+      --price: #e6e9ee; --badge-paper: #1d2747; --badge-paper-text: #9db1ff; --badge-live: #3a1820; --badge-live-text: #ff9db1;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 6px; }
+  h1 { font-size: 22px; margin: 0; }
+  .badge { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; letter-spacing: .02em; }
+  .paper { background: var(--badge-paper); color: var(--badge-paper-text); }
+  .live { background: var(--badge-live); color: var(--badge-live-text); }
+  .muted { color: var(--muted); }
+  .summary { font-size: 17px; margin: 10px 0 18px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .card, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .card { padding: 12px 14px; }
+  .card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .card .v { font-size: 22px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .card .s { font-size: 13px; color: var(--muted); }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .panel { padding: 14px; margin-bottom: 16px; }
+  .panel h2 { font-size: 15px; margin: 0 0 10px; }
+  .chart { position: relative; height: 280px; }
+  .chart.small { height: 200px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Cryptonomics Bot</h1>
+    <span id="mode" class="badge paper">PAPER</span>
+    <span id="kill" class="badge live" hidden>KILL SWITCH ON</span>
+    <span id="updated" class="muted"></span>
+  </header>
+  <div id="summary" class="summary muted">Loading…</div>
+
+  <section class="cards">
+    <div class="card"><div class="k">Position</div><div class="v" id="pos">–</div><div class="s" id="pos-s"></div></div>
+    <div class="card"><div class="k">DI+ / DI- (38)</div><div class="v" id="di">–</div><div class="s" id="di-s"></div></div>
+    <div class="card"><div class="k">Account value</div><div class="v" id="value">–</div><div class="s" id="value-s"></div></div>
+    <div class="card"><div class="k">Open trade</div><div class="v" id="trade">–</div><div class="s" id="trade-s"></div></div>
+  </section>
+
+  <section class="panel">
+    <h2>BTC daily close, last 12 months <span class="muted">(▲ buy, ▼ sell)</span></h2>
+    <div class="chart"><canvas id="price"></canvas></div>
+  </section>
+  <section class="panel">
+    <h2>DI+ / DI- (what the bot trades on) <span class="muted">· dashed: your 11 / 14 / 17 lines</span></h2>
+    <div class="chart small"><canvas id="dmi"></canvas></div>
+  </section>
+  <section class="panel">
+    <h2>Trades</h2>
+    <div class="table-wrap" id="trades"></div>
+  </section>
+  <section class="panel">
+    <h2>Daily signals</h2>
+    <div class="table-wrap" id="signals"></div>
+  </section>
+  <section class="panel">
+    <h2>Orders</h2>
+    <div class="table-wrap" id="orders"></div>
+  </section>
+</main>
+<script>
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const usd = (x, d = 0) => x == null ? "–" : "$" + Number(x).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const pct = x => (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
+const cls = x => x >= 0 ? "good" : "bad";
+let priceChart, dmiChart;
+
+function table(el, rows, cols) {
+  const box = document.getElementById(el);
+  if (!rows.length) { box.innerHTML = '<div class="empty">None yet.</div>'; return; }
+  box.innerHTML = "<table><thead><tr>" + cols.map(c => `<th>${c[0]}</th>`).join("") +
+    "</tr></thead><tbody>" + rows.map(r => "<tr>" + cols.map(c => `<td>${c[1](r) ?? ""}</td>`).join("") + "</tr>").join("") +
+    "</tbody></table>";
+}
+
+function markers(dates, trades, key) {
+  const out = dates.map(() => null);
+  const close = window._close || [];
+  trades.forEach(t => {
+    if (!t[key]) return;
+    const day = t[key].slice(0, 10);  // pin to the last closed candle on or before the trade
+    let i = dates.length - 1;
+    while (i >= 0 && dates[i] > day) i--;
+    if (i >= 0 && day >= dates[0]) out[i] = close[i];
+  });
+  return out;
+}
+
+function draw(s) {
+  const c = s.chart;
+  if (!c) return;
+  window._close = c.close;
+  const grid = {color: css("--line")}, ticks = {color: css("--muted"), maxTicksLimit: 8};
+  const base = {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
+                scales: {x: {grid, ticks}, y: {grid, ticks: {color: css("--muted")}}},
+                plugins: {legend: {labels: {color: css("--muted"), boxWidth: 12}}}};
+  const priceData = {labels: c.dates, datasets: [
+    {label: "Close", data: c.close, borderColor: css("--price"), borderWidth: 1.5, pointRadius: 0},
+    {label: "Buy", data: markers(c.dates, s.trades, "entry_time"), showLine: false, pointStyle: "triangle",
+     pointRadius: 8, backgroundColor: css("--good"), borderColor: css("--good")},
+    {label: "Sell", data: markers(c.dates, s.trades, "exit_time"), showLine: false, pointStyle: "triangle", rotation: 180,
+     pointRadius: 8, backgroundColor: css("--bad"), borderColor: css("--bad")}]};
+  const level = (v, col) => ({label: String(v), data: c.dates.map(() => v), borderColor: col, borderDash: [4, 4],
+                              borderWidth: 1, pointRadius: 0});
+  const dmiData = {labels: c.dates, datasets: [
+    {label: "DI+", data: c.di_plus, borderColor: css("--up"), borderWidth: 2, pointRadius: 0},
+    {label: "DI-", data: c.di_minus, borderColor: css("--down"), borderWidth: 2, pointRadius: 0},
+    {label: "ADX", data: c.adx, borderColor: css("--adx"), borderWidth: 1, pointRadius: 0},
+    level(11, css("--muted")), level(14, css("--down")), level(17, css("--down"))]};
+  if (priceChart) { priceChart.data = priceData; priceChart.update(); }
+  else priceChart = new Chart(document.getElementById("price"), {type: "line", data: priceData, options: base});
+  if (dmiChart) { dmiChart.data = dmiData; dmiChart.update(); }
+  else dmiChart = new Chart(document.getElementById("dmi"), {type: "line", data: dmiData,
+    options: {...base, plugins: {legend: {labels: {color: css("--muted"), boxWidth: 12,
+      filter: i => ["DI+", "DI-", "ADX"].includes(i.text)}}}}});
+}
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("api/status", {cache: "no-store"})).json(); }
+  catch (e) { document.getElementById("summary").innerHTML = '<span class="err">Could not reach the bot.</span>'; return; }
+
+  const mode = document.getElementById("mode");
+  mode.textContent = s.mode.toUpperCase(); mode.className = "badge " + (s.mode === "live" ? "live" : "paper");
+  document.getElementById("kill").hidden = !s.kill_switch;
+  const lr = s.last_run;
+  document.getElementById("updated").textContent = lr ? `last run ${lr.time} UTC` : "not run yet";
+  document.getElementById("summary").textContent = lr ? lr.summary + (lr.note ? " " + lr.note + "." : "") :
+    "The bot hasn't run yet. Start it with: python -m bot.run loop";
+  document.getElementById("summary").className = "summary";
+
+  const last = s.equity.at(-1), t = s.trade, sig = s.signals[0];
+  document.getElementById("pos").textContent = t ? "BTC" : "Cash";
+  document.getElementById("pos-s").textContent = last ? `${Number(last.base).toFixed(5)} BTC · ${usd(last.quote, 2)} cash` : "";
+  if (sig) {
+    document.getElementById("di").textContent = `${sig.di_plus.toFixed(1)} / ${sig.di_minus.toFixed(1)}`;
+    document.getElementById("di-s").textContent = (sig.di_plus > sig.di_minus ? "Uptrend" : "Downtrend") + ` · candle ${sig.candle_time.slice(0, 10)}`;
+  }
+  if (last) {
+    document.getElementById("value").textContent = usd(last.value);
+    if (s.start_value) {
+      const r = last.value / s.start_value - 1;
+      document.getElementById("value-s").innerHTML = `<span class="${cls(r)}">${pct(r)}</span> since ${s.equity[0].ts.slice(0, 10)}`;
+    }
+  }
+  if (t && last) {
+    const r = last.price / t.entry_price - 1;
+    document.getElementById("trade").innerHTML = `<span class="${cls(r)}">${pct(r)}</span>`;
+    document.getElementById("trade-s").textContent = `bought ${t.entry_time.slice(0, 10)} at ${usd(t.entry_price)}`;
+  } else { document.getElementById("trade").textContent = "None"; document.getElementById("trade-s").textContent = ""; }
+
+  draw(s);
+  table("trades", s.trades, [
+    ["Bought", r => r.entry_time.slice(0, 16)], ["At", r => usd(r.entry_price)], ["BTC", r => Number(r.qty).toFixed(5)],
+    ["Sold", r => r.exit_time ? r.exit_time.slice(0, 16) : "open"], ["At", r => r.exit_price ? usd(r.exit_price) : ""],
+    ["Return", r => r.ret == null ? "" : `<span class="${cls(r.ret)}">${pct(r.ret)}</span>`]]);
+  table("signals", s.signals, [
+    ["Candle", r => r.candle_time.slice(0, 10)], ["Close", r => usd(r.close)], ["DI+", r => r.di_plus.toFixed(1)],
+    ["DI-", r => r.di_minus.toFixed(1)], ["ADX", r => r.adx.toFixed(1)], ["Action", r => r.action], ["Note", r => r.note]]);
+  table("orders", s.orders, [
+    ["Time", r => r.created], ["Side", r => r.side], ["Type", r => r.type], ["Price", r => usd(r.price, 2)],
+    ["Qty", r => Number(r.qty).toFixed(5)], ["Status", r => r.status], ["Filled", r => Number(r.filled_qty).toFixed(5)],
+    ["Fee", r => usd(r.commission_usd, 2)]]);
+}
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# systemd unit for the dashboard (see cryptonomics-bot.service for install steps).
+[Unit]
+Description=Cryptonomics dashboard
+After=network-online.target
+
+[Service]
+User=crypto
+WorkingDirectory=/opt/cryptonomics
+ExecStart=/usr/bin/python3 -m bot.run web
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
