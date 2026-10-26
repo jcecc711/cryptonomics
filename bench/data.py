@@ -7,7 +7,7 @@ import requests
 
 API = "https://api.binance.us/api/v3/klines"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-INTERVAL_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+INTERVAL_MS = {"1h": 3_600_000, "4h": 14_400_000, "6h": 21_600_000,"1d": 86_400_000}
 
 
 def fetch(symbol="BTCUSDT", interval="1h", refresh=False):
