@@ -31,6 +31,10 @@ def run(df, entry, exit_, fee=0.0002, slippage=0.0002):
             units, in_pos = 0.0, False
         equity[i] = cash + units * closes[i]
     equity[-1] = cash + units * closes[-1]
+    if in_pos:  # still holding: mark to the last close so stats include it
+        trades.append({"entry_time": entry_t, "exit_time": df.index[-1],
+                       "entry": entry_px, "exit": closes[-1],
+                       "ret": closes[-1] / entry_px * (1 - cost) ** 2 - 1, "open": True})
     return pd.DataFrame(trades), pd.Series(equity, index=df.index)
 
 
