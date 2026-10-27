@@ -59,7 +59,8 @@ class Config:
 
     @property
     def db_path(self):
-        return self.data_dir / "bot.sqlite"
+        """Paper and live keep separate records, so switching to live starts clean."""
+        return self.data_dir / f"bot_{self.mode}.sqlite"
 
     @property
     def stop_file(self):

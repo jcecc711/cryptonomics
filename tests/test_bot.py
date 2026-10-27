@@ -352,6 +352,10 @@ class TestEnsemble(unittest.TestCase):
         rows = {r["strategy"]: r for r in self.store.rows("SELECT * FROM equity")}
         self.assertAlmostEqual(rows["total"]["value"], sum(rows[tf]["value"] for tf in self.cfg.timeframes))
 
+    def test_paper_and_live_keep_separate_records(self):
+        paper, live = make_cfg(self.tmp.name), make_cfg(self.tmp.name, mode="live")
+        self.assertNotEqual(paper.db_path, live.db_path)
+
     def test_rejects_unknown_timeframes(self):
         import os
         from bot import config

@@ -42,7 +42,8 @@ in the twelve months to Oct 2026).
   won't buy into a trend that is already running; it waits for the next fresh
   cross up.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
-- Everything is recorded in `data/bot.sqlite` (tagged by sleeve) and shown on the dashboard.
+- Everything is recorded in `data/bot_paper.sqlite` or `data/bot_live.sqlite` (tagged by sleeve)
+  and shown on the dashboard. Paper and live never share balances or trades.
 
 ### Going live
 
