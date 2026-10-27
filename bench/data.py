@@ -7,17 +7,21 @@ import requests
 
 API = "https://api.binance.us/api/v3/klines"
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-INTERVAL_MS = {"1h": 3_600_000, "4h": 14_400_000, "6h": 21_600_000,"1d": 86_400_000}
+INTERVAL_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "6h": 21_600_000, "1d": 86_400_000}
 
 
-def fetch(symbol="BTCUSDT", interval="1h", refresh=False):
-    """Return OHLCV candles indexed by open time (UTC), cached as CSV."""
+def fetch(symbol="BTCUSDT", interval="1h", refresh=False, start=None):
+    """Return OHLCV candles indexed by open time (UTC), cached as CSV.
+
+    `start` (e.g. "2024-10-01") limits how far back short timeframes go.
+    """
     DATA_DIR.mkdir(exist_ok=True)
     path = DATA_DIR / f"{symbol}_{interval}.csv"
     if path.exists() and not refresh:
         return pd.read_csv(path, index_col="time", parse_dates=True)
 
-    rows, start = [], 0
+    rows = []
+    start = int(pd.Timestamp(start).timestamp() * 1000) if start else 0
     while True:
         r = requests.get(API, params={"symbol": symbol, "interval": interval,
                                       "startTime": start, "limit": 1000}, timeout=30)
@@ -71,6 +75,12 @@ def fetch_coinbase(product="BTC-USD", interval="1d", start="2015-01-01", refresh
     df = df[df.index + pd.Timedelta(seconds=step) <= end]
     df.to_csv(path)
     return df
+
+
+def resample(df, rule):
+    """Combine candles into a longer timeframe, e.g. 3m -> 6m ("6min")."""
+    return df.resample(rule, label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
 
 
 def to_weekly(daily):
