@@ -49,16 +49,20 @@ class LiveBroker:
         return self.status(order_id)
 
     def fees(self, order_id, price):
-        """(commission in USD, commission paid in the base asset) for an order's fills."""
-        usd, in_base = 0.0, Decimal(0)
+        """(commission in USD, paid in the base asset, paid in the quote asset) for an order's fills.
+
+        Commission paid in another asset (e.g. BNB) doesn't come out of the trade.
+        """
+        usd, in_base, in_quote = 0.0, Decimal(0), Decimal(0)
         for t in self.c.my_trades(self.symbol, order_id):
             amt = Decimal(t["commission"])
             if t["commissionAsset"] == self.base:
                 in_base += amt
                 usd += float(amt * Decimal(str(price)))
             elif t["commissionAsset"] == self.quote:
+                in_quote += amt
                 usd += float(amt)
-        return usd, in_base
+        return usd, in_base, in_quote
 
 
 class PaperBroker:
@@ -66,22 +70,24 @@ class PaperBroker:
 
     A resting maker order fills once the book trades through its price (for a
     buy, the best bid drops below it or the best ask comes down to it). Balances
-    live in the bot's store so they survive restarts.
+    live in the bot's store under `key` so they survive restarts; each paper
+    sleeve gets its own.
     """
 
-    def __init__(self, client, symbol, store, maker_fee=0.0, taker_fee=0.0002, start_usd=10_000.0):
+    def __init__(self, client, symbol, store, maker_fee=0.0, taker_fee=0.0002, start_usd=10_000.0, key="paper"):
         self.c, self.symbol, self.store = client, symbol, store
         self.maker_fee, self.taker_fee = Decimal(str(maker_fee)), Decimal(str(taker_fee))
         self.orders, self._ids = {}, itertools.count(1)
-        if store.get("paper_quote") is None:
-            store.set("paper_quote", str(start_usd))
-            store.set("paper_base", "0")
+        self.kq, self.kb = f"{key}.quote", f"{key}.base"
+        if store.get(self.kq) is None:
+            store.set(self.kq, str(start_usd))
+            store.set(self.kb, "0")
 
     def book(self):
         return self.c.book(self.symbol)
 
     def balances(self):
-        return Decimal(self.store.get("paper_quote")), Decimal(self.store.get("paper_base"))
+        return Decimal(self.store.get(self.kq)), Decimal(self.store.get(self.kb))
 
     def _fill(self, o, price, fee):
         qty = Decimal(o["origQty"])
@@ -93,9 +99,9 @@ class PaperBroker:
         else:
             base -= qty
             quote += qty * price * (1 - fee)
-            o["fee_usd"] = float(qty * price * fee)
-        self.store.set("paper_quote", str(quote))
-        self.store.set("paper_base", str(base))
+            o["fee_quote"] = qty * price * fee
+        self.store.set(self.kq, str(quote))
+        self.store.set(self.kb, str(base))
         o.update(status="FILLED", executedQty=str(qty), cummulativeQuoteQty=str(qty * price))
 
     def _new(self, side, qty, price, type_):
@@ -145,5 +151,5 @@ class PaperBroker:
 
     def fees(self, order_id, price):
         o = self.orders[order_id]
-        fee_base = o.get("fee_base", Decimal(0))
-        return float(fee_base * Decimal(str(price))) + o.get("fee_usd", 0.0), fee_base
+        fee_base, fee_quote = o.get("fee_base", Decimal(0)), o.get("fee_quote", Decimal(0))
+        return float(fee_base * Decimal(str(price)) + fee_quote), fee_base, fee_quote

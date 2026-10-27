@@ -1,11 +1,13 @@
 """Run the bot.
 
-    python -m bot.run once        evaluate the last closed daily candle and act on it
-    python -m bot.run loop        run once now, then every hour (signals change daily at 00:00 UTC)
+    python -m bot.run once        evaluate the latest closed candles and act on them
+    python -m bot.run loop        run once now, then 5 minutes past every hour
     python -m bot.run status      print the current state
     python -m bot.run web         start the dashboard
 
-Paper trading is the default. Live trading needs BOT_MODE=live plus API keys.
+Two sleeves share the account: "core" (daily DI cross, 70%) and "swing" (4h
+EMA cross inside the daily uptrend, 30%). Each tracks its own cash and BTC and
+can be paper or live on its own. Paper is the default.
 Create data/STOP to stop all new orders.
 """
 import fcntl
@@ -14,7 +16,7 @@ import sys
 import time
 from decimal import Decimal
 
-from . import config, strategy
+from . import config, strategy, swing
 from .binanceus import BinanceUS
 from .broker import LiveBroker, PaperBroker
 from .execution import execute
@@ -23,75 +25,159 @@ from .store import Store, now
 log = logging.getLogger("bot")
 
 
-def make(cfg):
-    client = BinanceUS(cfg.api_key, cfg.api_secret)
-    store = Store(cfg.db_path)
-    if cfg.mode == "live":
-        broker = LiveBroker(client, cfg.symbol, cfg.base_asset, cfg.quote_asset)
-    else:
-        broker = PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee,
-                             cfg.paper_taker_fee, cfg.paper_start_usd)
-    return client, broker, store
+class Sleeve:
+    """One strategy trading its own share of the money."""
 
+    def __init__(self, name, share, mode, broker, store, cfg, maker_timeout_min):
+        self.name, self.share, self.mode = name, share, mode
+        self.broker, self.store, self.cfg = broker, store, cfg
+        self.maker_timeout_min = maker_timeout_min
 
-def summary(sig, trade, price):
-    di = f"DI+ {sig['di_plus']:.1f} / DI- {sig['di_minus']:.1f}"
-    if trade:
-        pnl = price / trade["entry_price"] - 1
-        return f"{di}. Holding BTC since {trade['entry_time'][:10]} at {trade['entry_price']:,.0f} ({pnl:+.1%})."
-    if sig["trend_up"]:
-        return f"{di}. In cash; DI+ is above DI- but the bot is waiting for a fresh cross up."
-    return f"{di}. In cash, waiting for DI+ to cross above DI-."
+    # Sleeve balances: what this strategy owns, separate from the account total.
+    @property
+    def cash(self):
+        return Decimal(self.store.get(f"{self.name}.cash", "0"))
 
+    @property
+    def btc(self):
+        return Decimal(self.store.get(f"{self.name}.btc", "0"))
 
-def run_once(cfg, client, broker, store):
-    for o in broker.cancel_leftovers():
-        log.warning("cancelled leftover order %s (%s, filled %s)", o["orderId"], o["status"], o["executedQty"])
-    candles = client.klines(cfg.symbol, cfg.interval)
-    sig = strategy.evaluate(candles, cfg.di_len, cfg.adx_smoothing)
-    trade = store.current_trade()
-    armed = store.get("armed")
-    if armed is None:  # first run
-        armed = cfg.join_open_trend or not sig["trend_up"]
-    action, armed = strategy.decide(sig, trade is not None, armed)
-    store.set("armed", armed)
+    def set_balances(self, cash, btc):
+        self.store.set(f"{self.name}.cash", str(cash))
+        self.store.set(f"{self.name}.btc", str(btc))
 
-    note = ""
-    if action and cfg.stop_file.exists():
-        note, action = f"kill switch ({cfg.stop_file.name}) is on, skipped {action}", None
-    elif action:
-        filters = client.filters(cfg.symbol)
-        quote, base = broker.balances()
-        if action == "BUY":
-            budget = min(quote * Decimal(str(cfg.allocation)), Decimal(str(cfg.max_order_usd)))
-            f = execute("BUY", budget, broker, filters, store, cfg)
-            if f.base > 0:
-                store.open_trade(f.avg_price, float(f.base - f.fee_base), float(f.quote) + f.fee_usd)
-            note = f"bought {f.base} at {f.avg_price:,.2f}" if f.base else "buy did not fill"
+    @property
+    def funded(self):
+        return self.store.get(f"{self.name}.cash") is not None
+
+    def evaluate(self, client, daily):
+        if self.name == "core":
+            return strategy.evaluate(daily, self.cfg.di_len, self.cfg.adx_smoothing)
+        candles = client.klines(self.cfg.symbol, "4h", limit=500)
+        return swing.evaluate(candles, daily, self.cfg.swing_fast, self.cfg.swing_slow,
+                              self.cfg.di_len, self.cfg.adx_smoothing)
+
+    def decide(self, sig, holding):
+        key = f"{self.name}.state"
+        if self.name == "core":
+            armed = self.store.get(key)
+            if armed is None:  # first run
+                armed = self.cfg.join_open_trend or not sig["trend_up"]
+            action, armed = strategy.decide(sig, holding, armed)
+            self.store.set(key, armed)
         else:
-            qty = min(base, Decimal(str(trade["qty"])))
-            f = execute("SELL", qty, broker, filters, store, cfg)
-            if f.base >= qty * Decimal("0.99"):
-                store.close_trade(f.avg_price, float(f.quote) - f.fee_usd)
-            elif f.base > 0:
-                store.reduce_trade(float(f.base))
-            note = f"sold {f.base} at {f.avg_price:,.2f}" if f.base else "sell did not fill"
+            action, state = swing.decide(sig, holding, self.store.get(key, {}))
+            self.store.set(key, state)
+        return action
 
-    store.record_signal(sig, action or ("HOLD" if store.current_trade() else "WAIT"), note)
-    bid, ask = broker.book()
+    def summary(self, sig, trade, price):
+        return (strategy if self.name == "core" else swing).summary(sig, trade, price)
+
+    def step(self, client, daily, filters_cache):
+        sig = self.evaluate(client, daily)
+        trade = self.store.current_trade(self.name)
+        action = self.decide(sig, trade is not None)
+        note = ""
+        if action and self.cfg.stop_file.exists():
+            note, action = f"kill switch ({self.cfg.stop_file.name}) is on, skipped {action}", None
+        elif action:
+            if "filters" not in filters_cache:
+                filters_cache["filters"] = client.filters(self.cfg.symbol)
+            note = self.trade(action, trade, filters_cache["filters"])
+        self.store.record_signal(self.name, sig, action or ("HOLD" if self.store.current_trade(self.name) else "WAIT"),
+                                 note)
+        return sig, action, note
+
+    def trade(self, action, trade, filters):
+        quote, base = self.broker.balances()
+        if action == "BUY":
+            budget = min(self.cash, quote, Decimal(str(self.cfg.max_order_usd)))
+            f = execute("BUY", budget, self.broker, filters, self.store, self.cfg, self.name, self.maker_timeout_min)
+            if f.base > 0:
+                got = f.base - f.fee_base
+                self.set_balances(self.cash - f.quote - f.fee_quote, self.btc + got)
+                self.store.open_trade(self.name, f.avg_price, float(got), float(f.quote) + f.fee_usd)
+            return f"bought {f.base} at {f.avg_price:,.2f}" if f.base else "buy did not fill"
+        qty = min(self.btc, base)
+        f = execute("SELL", qty, self.broker, filters, self.store, self.cfg, self.name, self.maker_timeout_min)
+        if f.base > 0:
+            self.set_balances(self.cash + f.quote - f.fee_quote, self.btc - f.base)
+            if f.base >= Decimal(str(trade["qty"])) * Decimal("0.99"):
+                self.store.close_trade(self.name, f.avg_price, float(f.quote) - f.fee_usd)
+            else:
+                self.store.reduce_trade(self.name, float(f.base))
+        return f"sold {f.base} at {f.avg_price:,.2f}" if f.base else "sell did not fill"
+
+
+def make(cfg, client=None, store=None):
+    client = client or BinanceUS(cfg.api_key, cfg.api_secret)
+    store = store or Store(cfg.db_path)
+    live = None
+    sleeves = []
+    specs = [("core", cfg.core_share, cfg.maker_timeout_min)]
+    if cfg.swing_enabled:
+        specs.append(("swing", cfg.swing_share, cfg.swing_maker_timeout_min))
+    for name, share, timeout in specs:
+        mode = cfg.sleeve_mode(name)
+        if mode == "live":
+            live = live or LiveBroker(client, cfg.symbol, cfg.base_asset, cfg.quote_asset)
+            broker = live
+        else:
+            broker = PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee, cfg.paper_taker_fee,
+                                 cfg.paper_start_usd * share, key=f"paper.{name}")
+        sleeves.append(Sleeve(name, share, mode, broker, store, cfg, timeout))
+    return client, sleeves, store
+
+
+def fund(sleeves):
+    """Give new sleeves their starting cash. Live sleeves split one reading of
+    the account's free quote balance, so funding order doesn't matter."""
+    new_live = [s for s in sleeves if not s.funded and s.mode == "live"]
+    if new_live:
+        quote, _ = new_live[0].broker.balances()
+        for s in new_live:
+            s.set_balances(quote * Decimal(str(s.share)), Decimal(0))
+            log.info("%s sleeve funded with %s (%.0f%% of free balance)", s.name, s.cash, 100 * s.share)
+    for s in sleeves:
+        if not s.funded:  # paper: its own simulated balance
+            s.set_balances(s.broker.balances()[0], Decimal(0))
+
+
+def run_once(cfg, client, sleeves, store):
+    for broker in {id(s.broker): s.broker for s in sleeves}.values():
+        for o in broker.cancel_leftovers():
+            log.warning("cancelled leftover order %s (%s, filled %s)", o["orderId"], o["status"], o["executedQty"])
+    fund(sleeves)
+    daily = client.klines(cfg.symbol, "1d")
+    cache, results, ts = {}, {}, now()
+    for s in sleeves:
+        try:
+            results[s.name] = s.step(client, daily, cache)
+        except Exception as e:  # one sleeve failing shouldn't stop the other
+            log.exception("%s sleeve failed", s.name)
+            results[s.name] = (None, None, f"error: {e}")
+
+    bid, ask = client.book(cfg.symbol)
     price = float((bid + ask) / 2)
-    quote, base = broker.balances()
-    store.snapshot(float(quote), float(base), price)
-    text = summary(sig, store.current_trade(), price)
-    store.set("last_run", {"time": now(), "summary": text, "note": note, "mode": cfg.mode})
-    log.info("%s %s", text, note)
-    return sig, action, note
+    total_cash = total_btc = 0.0
+    report = {}
+    for s in sleeves:
+        cash, btc = float(s.cash), float(s.btc)
+        total_cash, total_btc = total_cash + cash, total_btc + btc
+        store.snapshot(ts, s.name, cash, btc, price)
+        sig, action, note = results[s.name]
+        text = s.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
+        report[s.name] = {"summary": text, "note": note, "mode": s.mode, "share": s.share}
+        log.info("[%s/%s] %s %s", s.name, s.mode, text, note)
+    store.snapshot(ts, "total", total_cash, total_btc, price)
+    store.set("last_run", {"time": ts, "sleeves": report})
+    return results
 
 
-def loop(cfg, client, broker, store, every_sec=3600):
+def loop(cfg, client, sleeves, store, every_sec=3600):
     while True:
         try:
-            run_once(cfg, client, broker, store)
+            run_once(cfg, client, sleeves, store)
         except Exception:
             log.exception("run failed; will retry next cycle")
         time.sleep(every_sec - time.time() % every_sec + 300)  # 5 minutes past each hour
@@ -107,21 +193,26 @@ def main(argv=None):
         from .web import serve
         serve(cfg)
         return
-    client, broker, store = make(cfg)
+    client, sleeves, store = make(cfg)
     if cmd == "status":
-        print(store.get("last_run", {}).get("summary", "No runs yet."))
-        print("mode:", cfg.mode, "| balances (quote, base):", broker.balances())
+        last = store.get("last_run")
+        if not last:
+            print("No runs yet.")
+        for name, r in (last or {}).get("sleeves", {}).items():
+            print(f"[{name} {r['mode']} {r['share']:.0%}] {r['summary']}")
+        for s in sleeves:
+            print(f"{s.name}: cash {s.cash:.2f}, BTC {s.btc}")
         return
 
-    lock = open(cfg.data_dir / f"bot_{cfg.mode}.lock", "w")
+    lock = open(cfg.data_dir / "bot.lock", "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         raise SystemExit("Another bot process is already running")
     if cmd == "once":
-        run_once(cfg, client, broker, store)
+        run_once(cfg, client, sleeves, store)
     elif cmd == "loop":
-        loop(cfg, client, broker, store)
+        loop(cfg, client, sleeves, store)
     else:
         raise SystemExit(__doc__)
 

@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 
 BASE = "https://api.binance.us"
-INTERVAL_MS = {"1h": 3_600_000, "6h": 21_600_000, "1d": 86_400_000}
+INTERVAL_MS = {"1h": 3_600_000, "4h": 14_400_000, "6h": 21_600_000, "1d": 86_400_000}
 
 
 class BinanceError(Exception):

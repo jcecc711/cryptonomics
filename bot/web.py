@@ -20,10 +20,10 @@ PAGE = Path(__file__).with_name("dashboard.html")
 _chart_cache = {"t": 0, "data": None}
 
 
-def chart_data(cfg, client, days=365):
+def chart_data(cfg, client, days=365, swing_bars=180):
     if time.time() - _chart_cache["t"] < 300 and _chart_cache["data"]:
         return _chart_cache["data"]
-    candles = client.klines(cfg.symbol, cfg.interval)
+    candles = client.klines(cfg.symbol, "1d")
     d = strategy.adx(candles, cfg.di_len, cfg.adx_smoothing).tail(days)
     c = candles["close"].tail(days)
     data = {"dates": [t.strftime("%Y-%m-%d") for t in c.index],
@@ -31,20 +31,35 @@ def chart_data(cfg, client, days=365):
             "di_plus": [round(x, 2) for x in d["di_plus"]],
             "di_minus": [round(x, 2) for x in d["di_minus"]],
             "adx": [round(x, 2) for x in d["adx"]]}
+    if cfg.swing_enabled:
+        h4 = client.klines(cfg.symbol, "4h", limit=500)
+        fast, slow = strategy.ema(h4.close, cfg.swing_fast), strategy.ema(h4.close, cfg.swing_slow)
+        data["swing"] = {"times": [t.strftime("%Y-%m-%d %H:%M") for t in h4.index[-swing_bars:]],
+                         "close": [round(x, 2) for x in h4.close.tail(swing_bars)],
+                         "fast": [round(x, 2) for x in fast.tail(swing_bars)],
+                         "slow": [round(x, 2) for x in slow.tail(swing_bars)]}
     _chart_cache.update(t=time.time(), data=data)
     return data
 
 
 def status(cfg, store, client):
-    eq = store.rows("SELECT ts, value, quote, base, price FROM equity ORDER BY ts")
+    names = ["core"] + (["swing"] if cfg.swing_enabled else [])
+    sleeves = []
+    for name in names:
+        eq = store.rows("SELECT ts, value, cash, btc, price FROM equity WHERE strategy=? ORDER BY ts", name)
+        sleeves.append({
+            "name": name, "mode": cfg.sleeve_mode(name), "share": getattr(cfg, f"{name}_share"),
+            "trade": store.current_trade(name),
+            "last": eq[-1] if eq else None, "start_value": eq[0]["value"] if eq else None,
+            "signals": store.rows("SELECT * FROM signals WHERE strategy=? ORDER BY candle_time DESC LIMIT 20", name),
+        })
+    total = store.rows("SELECT ts, value FROM equity WHERE strategy='total' ORDER BY ts")
     out = {
-        "mode": cfg.mode, "symbol": cfg.symbol, "di_len": cfg.di_len,
+        "symbol": cfg.symbol, "di_len": cfg.di_len,
         "kill_switch": cfg.stop_file.exists(),
         "last_run": store.get("last_run"),
-        "trade": store.current_trade(),
-        "equity": eq[-500:],
-        "start_value": eq[0]["value"] if eq else None,
-        "signals": store.rows("SELECT * FROM signals ORDER BY candle_time DESC LIMIT 30"),
+        "sleeves": sleeves,
+        "equity": total[-1000:],
         "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
         "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 50"),
     }
@@ -105,5 +120,5 @@ def make_server(cfg, port=None, client=None):
 
 def serve(cfg):
     srv = make_server(cfg)
-    print(f"Dashboard on http://{cfg.dashboard_host}:{srv.server_address[1]}  ({cfg.mode} mode)")
+    print(f"Dashboard on http://{cfg.dashboard_host}:{srv.server_address[1]}")
     srv.serve_forever()
