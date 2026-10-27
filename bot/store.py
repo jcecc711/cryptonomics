@@ -1,6 +1,7 @@
 """SQLite record of the bot's state, signals, orders, trades and equity.
 
-Rows are tagged with the strategy (sleeve) they belong to: "core" or "swing".
+Rows are tagged with the sleeve they belong to (its timeframe, e.g. "4h");
+equity rows also have a "total" for the whole account.
 """
 import json
 import sqlite3

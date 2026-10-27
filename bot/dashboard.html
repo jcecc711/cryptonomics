@@ -9,20 +9,21 @@
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #667080; --line: #e3e6ea;
     --up: #1aa0c8; --down: #d6335a; --adx: #8a8f98; --price: #1b1f24; --good: #1f9d55; --bad: #d6335a;
-    --fast: #e0a100; --slow: #1aa0c8;
+    --accent: #3451b2; --chip: #eef1f5;
     --badge-paper: #e9eefc; --badge-paper-text: #3451b2; --badge-live: #fde8ec; --badge-live-text: #b4233f;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #9aa3ae; --line: #262c34;
-      --price: #e6e9ee; --badge-paper: #1d2747; --badge-paper-text: #9db1ff; --badge-live: #3a1820; --badge-live-text: #ff9db1;
+      --price: #e6e9ee; --accent: #9db1ff; --chip: #212730;
+      --badge-paper: #1d2747; --badge-paper-text: #9db1ff; --badge-live: #3a1820; --badge-live-text: #ff9db1;
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 48px; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
   h1 { font-size: 22px; margin: 0; }
   h2 { font-size: 15px; margin: 0 0 10px; }
   .badge { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; letter-spacing: .02em; }
@@ -33,52 +34,50 @@
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
   .total { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; }
   .total .v { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .sleeves { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
-  .sleeves .panel { margin-bottom: 0; }
-  .sleeve-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
-  .sleeve-head h2 { margin: 0; }
-  .summary { margin: 4px 0 12px; }
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .stats .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  .stats .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .stats .s { font-size: 12px; color: var(--muted); }
+  .sleeves { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .sleeve { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .sleeve .head { display: flex; justify-content: space-between; align-items: baseline; }
+  .sleeve .tf { font-size: 18px; font-weight: 700; }
+  .sleeve .pos { font-size: 13px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--chip); }
+  .sleeve .row { display: flex; justify-content: space-between; font-size: 13px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .sleeve .sum { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tabs button { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line);
+                 background: var(--panel); color: var(--text); cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
   .chart { position: relative; height: 280px; }
-  .chart.small { height: 200px; }
+  .chart.small { height: 190px; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th { color: var(--muted); font-weight: 600; }
   .empty { color: var(--muted); padding: 8px 0; }
   .err { color: var(--bad); }
-  .stack { margin-top: 16px; }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>Cryptonomics Bot</h1>
+    <span id="mode" class="badge paper">PAPER</span>
     <span id="kill" class="badge live" hidden>KILL SWITCH ON</span>
     <span id="updated" class="muted">Loading…</span>
   </header>
 
   <section class="panel total">
-    <div><div class="muted">Total account (both strategies)</div><div class="v" id="total">–</div></div>
+    <div><div class="muted">Total account</div><div class="v" id="total">–</div></div>
     <div id="total-s" class="muted"></div>
+    <div id="exposure" class="muted"></div>
   </section>
 
   <section class="sleeves" id="sleeves"></section>
 
-  <section class="panel stack">
-    <h2>Core: BTC daily close, last 12 months <span class="muted">(▲ buy, ▼ sell)</span></h2>
-    <div class="chart"><canvas id="price"></canvas></div>
-  </section>
   <section class="panel">
-    <h2>Core: daily DI+ / DI- (38) <span class="muted">· dashed: your 11 / 14 / 17 lines</span></h2>
+    <div class="tabs" id="tabs" role="group" aria-label="Timeframe"></div>
+    <h2 id="price-title">BTC close <span class="muted">(▲ buy, ▼ sell)</span></h2>
+    <div class="chart"><canvas id="price"></canvas></div>
+    <h2 style="margin-top:14px">DI+ / DI- (38) <span class="muted">· dashed: your 11 / 14 / 17 lines</span></h2>
     <div class="chart small"><canvas id="dmi"></canvas></div>
-  </section>
-  <section class="panel" id="swing-panel">
-    <h2>Swing: 4-hour close with EMA 8 / 21, last 30 days <span class="muted">(▲ buy, ▼ sell)</span></h2>
-    <div class="chart"><canvas id="swing"></canvas></div>
   </section>
   <section class="panel">
     <h2>Account value</h2>
@@ -103,8 +102,9 @@ const usd = (x, d = 0) => x == null ? "–" : "$" + Number(x).toLocaleString(und
 const pct = x => (x >= 0 ? "+" : "") + (x * 100).toFixed(1) + "%";
 const cls = x => x >= 0 ? "good" : "bad";
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-const TITLES = {core: "Core · daily DI(38)", swing: "Swing · 4h EMA 8/21"};
 const charts = {};
+let state = null, selected = null;
+try { selected = localStorage.getItem("tf"); } catch (e) {}
 
 function table(el, rows, cols) {
   const box = document.getElementById(el);
@@ -117,6 +117,7 @@ function table(el, rows, cols) {
 // Put a marker on the last candle at or before each trade time.
 function markers(labels, values, trades, key) {
   const out = labels.map(() => null);
+  if (!labels.length) return out;
   trades.forEach(t => {
     if (!t[key]) return;
     const when = t[key].slice(0, labels[0].length);
@@ -129,106 +130,109 @@ function markers(labels, values, trades, key) {
 }
 
 function draw(id, data, options) {
-  if (charts[id]) { charts[id].data = data; charts[id].update(); }
+  if (charts[id]) { charts[id].data = data; charts[id].options = options; charts[id].update(); }
   else charts[id] = new Chart(document.getElementById(id), {type: "line", data, options});
 }
 
 function baseOptions(legendFilter) {
   const grid = {color: css("--line")};
   return {responsive: true, maintainAspectRatio: false, animation: false, interaction: {mode: "index", intersect: false},
-          scales: {x: {grid, ticks: {color: css("--muted"), maxTicksLimit: 8}}, y: {grid, ticks: {color: css("--muted")}}},
+          scales: {x: {grid, ticks: {color: css("--muted"), maxTicksLimit: 7}}, y: {grid, ticks: {color: css("--muted")}}},
           plugins: {legend: {labels: {color: css("--muted"), boxWidth: 12, ...(legendFilter ? {filter: legendFilter} : {})}}}};
 }
 
 const tri = (label, data, color, down) => ({label, data, showLine: false, pointStyle: "triangle", rotation: down ? 180 : 0,
                                              pointRadius: 8, backgroundColor: color, borderColor: color});
 
-function drawCharts(s) {
-  const c = s.chart;
+function drawTimeframe() {
+  const s = state, c = s.chart && s.chart[selected];
+  document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-pressed", b.dataset.tf === selected));
   if (!c) return;
-  const core = s.trades.filter(t => t.strategy === "core"), sw = s.trades.filter(t => t.strategy === "swing");
-  draw("price", {labels: c.dates, datasets: [
+  const trades = s.trades.filter(t => t.strategy === selected);
+  document.getElementById("price-title").innerHTML =
+    `BTC ${selected} close, last ${c.times.length} candles <span class="muted">(▲ buy, ▼ sell)</span>`;
+  draw("price", {labels: c.times, datasets: [
     {label: "Close", data: c.close, borderColor: css("--price"), borderWidth: 1.5, pointRadius: 0},
-    tri("Buy", markers(c.dates, c.close, core, "entry_time"), css("--good")),
-    tri("Sell", markers(c.dates, c.close, core, "exit_time"), css("--bad"), true)]}, baseOptions());
-  const level = (v, col) => ({label: String(v), data: c.dates.map(() => v), borderColor: col, borderDash: [4, 4], borderWidth: 1, pointRadius: 0});
-  draw("dmi", {labels: c.dates, datasets: [
+    tri("Buy", markers(c.times, c.close, trades, "entry_time"), css("--good")),
+    tri("Sell", markers(c.times, c.close, trades, "exit_time"), css("--bad"), true)]}, baseOptions());
+  const level = (v, col) => ({label: String(v), data: c.times.map(() => v), borderColor: col, borderDash: [4, 4], borderWidth: 1, pointRadius: 0});
+  draw("dmi", {labels: c.times, datasets: [
     {label: "DI+", data: c.di_plus, borderColor: css("--up"), borderWidth: 2, pointRadius: 0},
     {label: "DI-", data: c.di_minus, borderColor: css("--down"), borderWidth: 2, pointRadius: 0},
     {label: "ADX", data: c.adx, borderColor: css("--adx"), borderWidth: 1, pointRadius: 0},
     level(11, css("--muted")), level(14, css("--down")), level(17, css("--down"))]},
     baseOptions(i => ["DI+", "DI-", "ADX"].includes(i.text)));
-  document.getElementById("swing-panel").hidden = !c.swing;
-  if (c.swing) {
-    const w = c.swing;
-    draw("swing", {labels: w.times, datasets: [
-      {label: "Close", data: w.close, borderColor: css("--price"), borderWidth: 1.5, pointRadius: 0},
-      {label: "EMA 8", data: w.fast, borderColor: css("--fast"), borderWidth: 1.5, pointRadius: 0},
-      {label: "EMA 21", data: w.slow, borderColor: css("--slow"), borderWidth: 1.5, pointRadius: 0},
-      tri("Buy", markers(w.times, w.close, sw, "entry_time"), css("--good")),
-      tri("Sell", markers(w.times, w.close, sw, "exit_time"), css("--bad"), true)]}, baseOptions());
-  }
 }
 
 function sleeveCard(sl, run) {
   const last = sl.last, t = sl.trade, r = run && run.sleeves ? run.sleeves[sl.name] : null;
   const ret = last && sl.start_value ? last.value / sl.start_value - 1 : null;
   const open = t && last ? last.price / t.entry_price - 1 : null;
-  return `<div class="panel">
-    <div class="sleeve-head"><h2>${TITLES[sl.name] || sl.name}</h2>
-      <span class="badge ${sl.mode === "live" ? "live" : "paper"}">${sl.mode.toUpperCase()}</span>
-      <span class="muted">${Math.round(sl.share * 100)}% of account</span></div>
-    <div class="summary">${r ? esc(r.summary) + (r.note ? ` <span class="muted">${esc(r.note)}.</span>` : "") : '<span class="muted">Not run yet.</span>'}</div>
-    <div class="stats">
-      <div><div class="k">Position</div><div class="v">${t ? "BTC" : "Cash"}</div>
-        <div class="s">${last ? Number(last.btc).toFixed(5) + " BTC" : ""}</div></div>
-      <div><div class="k">Value</div><div class="v">${last ? usd(last.value) : "–"}</div>
-        <div class="s">${ret == null ? "" : `<span class="${cls(ret)}">${pct(ret)}</span> since start`}</div></div>
-      <div><div class="k">Open trade</div><div class="v">${open == null ? "None" : `<span class="${cls(open)}">${pct(open)}</span>`}</div>
-        <div class="s">${t ? "at " + usd(t.entry_price) : ""}</div></div>
-    </div></div>`;
+  return `<div class="sleeve">
+    <div class="head"><span class="tf">${sl.name}</span><span class="pos">${t ? "BTC" : "Cash"}</span></div>
+    <div class="row"><span class="muted">Value</span><span>${last ? usd(last.value) : "–"}
+      ${ret == null ? "" : `<span class="${cls(ret)}">${pct(ret)}</span>`}</span></div>
+    <div class="row"><span class="muted">Open trade</span><span>${open == null ? "–" :
+      `<span class="${cls(open)}">${pct(open)}</span> from ${usd(t.entry_price)}`}</span></div>
+    <div class="sum">${r ? esc(r.summary) + (r.note ? " " + esc(r.note) + "." : "") : "Not run yet."}</div>
+  </div>`;
 }
 
 const reading = r => {
   const x = JSON.parse(r.readings || "{}");
-  if ("di_plus" in x) return `DI+ ${x.di_plus.toFixed(1)} / DI- ${x.di_minus.toFixed(1)}`;
-  if ("ema_fast" in x) return `EMA8 ${usd(x.ema_fast)} / EMA21 ${usd(x.ema_slow)} · daily ${x.daily_up ? "up" : "down"}`;
-  return "";
+  return "di_plus" in x ? `DI+ ${x.di_plus.toFixed(1)} / DI- ${x.di_minus.toFixed(1)}` : "";
 };
 
 async function refresh() {
   let s;
   try { s = await (await fetch("api/status", {cache: "no-store"})).json(); }
   catch (e) { document.getElementById("updated").innerHTML = '<span class="err">Could not reach the bot.</span>'; return; }
+  state = s;
 
+  const mode = document.getElementById("mode");
+  mode.textContent = s.mode.toUpperCase(); mode.className = "badge " + (s.mode === "live" ? "live" : "paper");
   document.getElementById("kill").hidden = !s.kill_switch;
   document.getElementById("updated").textContent = s.last_run ? `last run ${s.last_run.time} UTC` :
     "not run yet. Start it with: python -m bot.run loop";
   const eq = s.equity, last = eq.at(-1);
   document.getElementById("total").textContent = last ? usd(last.value) : "–";
-  if (last && eq.length) {
+  if (last) {
     const r = last.value / eq[0].value - 1;
     document.getElementById("total-s").innerHTML = `<span class="${cls(r)}">${pct(r)}</span> since ${eq[0].ts.slice(0, 10)}`;
+    const holding = s.sleeves.filter(x => x.trade).length;
+    document.getElementById("exposure").textContent = `${holding} of ${s.sleeves.length} sleeves holding BTC`;
   }
   document.getElementById("sleeves").innerHTML = s.sleeves.map(sl => sleeveCard(sl, s.last_run)).join("");
 
-  drawCharts(s);
+  const tfs = s.sleeves.map(x => x.name);
+  if (!tfs.includes(selected)) selected = tfs[tfs.length - 1];
+  const tabs = document.getElementById("tabs");
+  if (tabs.children.length !== tfs.length) {
+    tabs.innerHTML = tfs.map(tf => `<button type="button" data-tf="${tf}">${tf}</button>`).join("");
+    tabs.querySelectorAll("button").forEach(b => b.onclick = () => {
+      selected = b.dataset.tf;
+      try { localStorage.setItem("tf", selected); } catch (e) {}
+      drawTimeframe();
+    });
+  }
+  drawTimeframe();
   draw("equity", {labels: eq.map(e => e.ts.slice(0, 16)), datasets: [
-    {label: "Total", data: eq.map(e => e.value), borderColor: css("--up"), borderWidth: 2, pointRadius: 0}]},
+    {label: "Total", data: eq.map(e => e.value), borderColor: css("--up"), backgroundColor: css("--up"), borderWidth: 2,
+     pointRadius: eq.length < 2 ? 4 : 0}]},
     {...baseOptions(), plugins: {legend: {display: false}}});
 
   table("trades", s.trades, [
-    ["Strategy", r => r.strategy], ["Bought", r => r.entry_time.slice(0, 16)], ["At", r => usd(r.entry_price)],
+    ["Sleeve", r => r.strategy], ["Bought", r => r.entry_time.slice(0, 16)], ["At", r => usd(r.entry_price)],
     ["BTC", r => Number(r.qty).toFixed(5)], ["Sold", r => r.exit_time ? r.exit_time.slice(0, 16) : "open"],
     ["At", r => r.exit_price ? usd(r.exit_price) : ""],
     ["Return", r => r.ret == null ? "" : `<span class="${cls(r.ret)}">${pct(r.ret)}</span>`]]);
   const sigs = s.sleeves.flatMap(sl => sl.signals.map(x => ({...x, strategy: sl.name})))
-    .sort((a, b) => b.candle_time.localeCompare(a.candle_time)).slice(0, 30);
+    .sort((a, b) => b.created.localeCompare(a.created)).slice(0, 30);
   table("signals", sigs, [
-    ["Strategy", r => r.strategy], ["Candle", r => r.candle_time.slice(0, 16)], ["Close", r => usd(r.close)],
+    ["Sleeve", r => r.strategy], ["Candle", r => r.candle_time.slice(0, 16)], ["Close", r => usd(r.close)],
     ["Reading", reading], ["Action", r => r.action], ["Note", r => esc(r.note)]]);
   table("orders", s.orders, [
-    ["Strategy", r => r.strategy], ["Time", r => r.created], ["Side", r => r.side], ["Type", r => r.type],
+    ["Sleeve", r => r.strategy], ["Time", r => r.created], ["Side", r => r.side], ["Type", r => r.type],
     ["Price", r => usd(r.price, 2)], ["Qty", r => Number(r.qty).toFixed(5)], ["Status", r => r.status],
     ["Filled", r => Number(r.filled_qty).toFixed(5)], ["Fee", r => usd(r.commission_usd, 2)]]);
 }

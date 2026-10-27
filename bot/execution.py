@@ -47,13 +47,11 @@ def _remaining_qty(side, budget, fill, price, filters):
     return filters.qty(budget - fill.base)
 
 
-def execute(side, budget, broker, filters, store, cfg, strategy="core", maker_timeout_min=None,
-            clock=None, sleep=None):
+def execute(side, budget, broker, filters, store, cfg, strategy="", clock=None, sleep=None):
     """Buy with `budget` quote (side BUY) or sell `budget` base (side SELL)."""
     clock, sleep = clock or time.monotonic, sleep or time.sleep
     fill = Fill()
-    timeout = cfg.maker_timeout_min if maker_timeout_min is None else maker_timeout_min
-    deadline = clock() + timeout * 60
+    deadline = clock() + cfg.maker_timeout_min * 60
     while clock() < deadline and not cfg.stop_file.exists():
         bid, ask = broker.book()
         price = filters.price(bid if side == "BUY" else ask)

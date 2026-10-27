@@ -19,7 +19,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))  # bench uses flat imports
 from bench.exits import signals as bench_signals
 from bench.indicators import adx, ema
-from bot import run, strategy, swing, web
+from bot import run, strategy, web
 from bot.binanceus import BinanceError, Filters, sign
 from bot.broker import PaperBroker
 from bot.config import Config
@@ -80,8 +80,14 @@ class Clock:
 
 
 def make_cfg(tmp, **kw):
-    kw.setdefault("swing_enabled", False)
-    return Config(data_dir=Path(tmp), poll_sec=10, maker_timeout_min=1, swing_maker_timeout_min=1, **kw)
+    kw.setdefault("timeframes", ("1d",))
+    return Config(data_dir=Path(tmp), poll_sec=10, maker_timeout_min=1, **kw)
+
+
+def ensemble_candles(n=3000):
+    h4 = synthetic_candles(n=n, seed=3, freq="4h", vol=0.012)
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    return {"4h": h4, "8h": h4.resample("8h").agg(agg), "12h": h4.resample("12h").agg(agg), "1d": daily_from(h4)}
 
 
 class FakeTime:
@@ -185,66 +191,6 @@ class TestStrategy(unittest.TestCase):
         self.assertEqual(strategy.decide(down, True, True), ("SELL", True))
 
 
-class TestSwing(unittest.TestCase):
-    def setUp(self):
-        self.h4 = synthetic_candles(n=1500, seed=3, freq="4h", vol=0.012)
-        self.daily = daily_from(self.h4)
-
-    def test_bot_trades_the_same_candles_as_the_backtest(self):
-        """Feeding one closed 4h candle per run reproduces the bench rule:
-        enter on an EMA 8/21 cross up while the daily DI trend is up; exit on
-        the cross down or when the daily trend turns down."""
-        h4, daily = self.h4, self.daily
-        fast, slow = ema(h4.close, 8), ema(h4.close, 21)
-        up = swing.daily_up_at(h4.index, pd.Timedelta(hours=4), daily)
-        cu = (fast > slow) & (fast.shift() <= slow.shift())
-        cd = (fast < slow) & (fast.shift() >= slow.shift())
-        ref_e, ref_x, holding = [], [], False
-        for i in range(300, len(h4)):
-            if not holding and cu.iloc[i] and up.iloc[i]:
-                holding = True
-                ref_e.append(h4.index[i])
-            elif holding and (cd.iloc[i] or not up.iloc[i]):
-                holding = False
-                ref_x.append(h4.index[i])
-
-        bot_e, bot_x, holding, state = [], [], False, {"last": str(h4.index[299])}
-        for i in range(300, len(h4)):
-            c = h4.iloc[: i + 1]
-            d = daily[daily.index + pd.Timedelta(days=1) <= c.index[-1] + pd.Timedelta(hours=4)]
-            sig = swing.evaluate(c, d)
-            action, state = swing.decide(sig, holding, state)
-            if action == "BUY":
-                holding = True
-                bot_e.append(h4.index[i])
-            elif action == "SELL":
-                holding = False
-                bot_x.append(h4.index[i])
-        self.assertGreater(len(ref_e), 5)
-        self.assertEqual(bot_e, ref_e)
-        self.assertEqual(bot_x, ref_x)
-
-    def test_catches_a_cross_it_missed_while_offline(self):
-        t = pd.date_range("2026-01-01", periods=4, freq="4h")
-        recent = pd.DataFrame({"cross_up": [False, True, False, False], "daily_up": [True] * 4}, index=t)
-        sig = {"candle_time": t[-1], "trend_up": True, "daily_up": True, "recent": recent}
-        self.assertEqual(swing.decide(sig, False, {"last": str(t[0])})[0], "BUY")
-        # ...but not one it already processed, nor one made while the daily trend was down
-        self.assertIsNone(swing.decide(sig, False, {"last": str(t[1])})[0])
-        recent.loc[t[1], "daily_up"] = False
-        self.assertIsNone(swing.decide(sig, False, {"last": str(t[0])})[0])
-
-    def test_first_run_only_acts_on_the_latest_candle(self):
-        t = pd.date_range("2026-01-01", periods=3, freq="4h")
-        recent = pd.DataFrame({"cross_up": [True, False, False], "daily_up": [True] * 3}, index=t)
-        sig = {"candle_time": t[-1], "trend_up": True, "daily_up": True, "recent": recent}
-        self.assertIsNone(swing.decide(sig, False, {})[0])
-
-    def test_exits_when_daily_trend_turns_down(self):
-        sig = {"candle_time": "x", "trend_up": True, "daily_up": False, "recent": None}
-        self.assertEqual(swing.decide(sig, True, {})[0], "SELL")
-
-
 class TestPaperExecution(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -318,14 +264,13 @@ class TestRunOnce(unittest.TestCase):
         d = synthetic_candles()
         di = adx(d, 38, 9)
         up = di.di_plus > di.di_minus
-        # cut history at a day DI+ is above DI-, so the core should buy
+        # cut history at a day DI+ is above DI-, so the sleeve should buy
         self.candles = d.loc[: up[up].index[-1]]
         self.clock = Clock()
         self.client = FakeClient([(0, "100.00", "100.01"), (5, "99.99", "100.00")], self.candles, self.clock)
 
     def tearDown(self):
-        if hasattr(self, "store"):
-            self.store.db.close()
+        self.store.db.close()
         self.tmp.cleanup()
 
     def run_once(self):
@@ -334,75 +279,89 @@ class TestRunOnce(unittest.TestCase):
             return run.run_once(self.cfg, self.client, sleeves, self.store)
 
     def test_buys_then_holds_on_rerun(self):
-        _, action, _ = self.run_once()["core"]
+        _, action, _ = self.run_once()["1d"]
         self.assertEqual(action, "BUY")
-        self.assertIsNotNone(self.store.current_trade("core"))
-        _, action, _ = self.run_once()["core"]
+        self.assertIsNotNone(self.store.current_trade("1d"))
+        _, action, _ = self.run_once()["1d"]
         self.assertIsNone(action)
         rows = self.store.rows("SELECT action FROM signals")
         self.assertEqual(rows, [{"action": "BUY"}])  # re-run did not overwrite the BUY
-        self.assertIn("Holding", self.store.get("last_run")["sleeves"]["core"]["summary"])
-
-    def test_core_spends_only_its_70_percent(self):
-        self.run_once()
-        core = self.store.rows("SELECT * FROM equity WHERE strategy='core'")[-1]
-        self.assertAlmostEqual(core["cash"] + core["btc"] * 100.0, 700.0, places=2)
-        self.assertAlmostEqual(core["btc"], 7.0, places=5)
+        self.assertIn("Holding", self.store.get("last_run")["sleeves"]["1d"]["summary"])
 
     def test_kill_switch_blocks_orders(self):
         self.cfg.stop_file.touch()
-        _, action, note = self.run_once()["core"]
+        _, action, note = self.run_once()["1d"]
         self.assertIsNone(action)
         self.assertIn("kill switch", note)
         self.assertEqual(self.store.rows("SELECT * FROM orders"), [])
-        self.assertIsNone(self.store.current_trade("core"))
+        self.assertIsNone(self.store.current_trade("1d"))
 
     def test_first_run_mid_trend_waits_by_default(self):
         self.cfg.join_open_trend = False
-        _, action, _ = self.run_once()["core"]
+        _, action, _ = self.run_once()["1d"]
         self.assertIsNone(action)
-        self.assertIn("waiting for a fresh cross", self.store.get("last_run")["sleeves"]["core"]["summary"])
+        self.assertIn("waiting for a fresh cross", self.store.get("last_run")["sleeves"]["1d"]["summary"])
 
 
-class TestSleeves(unittest.TestCase):
+class TestEnsemble(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.cfg = make_cfg(self.tmp.name, swing_enabled=True, paper_start_usd=1000)
+        self.cfg = make_cfg(self.tmp.name, timeframes=("4h", "8h", "12h", "1d"), paper_start_usd=1000,
+                            join_open_trend=True)
         self.store = Store(self.cfg.db_path)
 
     def tearDown(self):
-        if hasattr(self, "store"):
-            self.store.db.close()
+        self.store.db.close()
         self.tmp.cleanup()
 
-    def test_live_sleeves_split_one_balance_reading_70_30(self):
+    def test_live_sleeves_split_one_balance_reading_equally(self):
         class Live:
             def balances(self):
                 return Decimal("1000"), Decimal("0")
 
         live = Live()
-        sleeves = [run.Sleeve("core", 0.7, "live", live, self.store, self.cfg, 1),
-                   run.Sleeve("swing", 0.3, "live", live, self.store, self.cfg, 1)]
+        sleeves = [run.Sleeve(tf, 0.25, "live", live, self.store, self.cfg) for tf in self.cfg.timeframes]
         run.fund(sleeves)
-        self.assertEqual([s.cash for s in sleeves], [Decimal("700.0"), Decimal("300.0")])
+        self.assertEqual([s.cash for s in sleeves], [Decimal("250.00")] * 4)
         run.fund(sleeves)  # funding happens once
-        self.assertEqual(sleeves[0].cash, Decimal("700.0"))
+        self.assertEqual(sleeves[0].cash, Decimal("250.00"))
 
-    def test_core_live_swing_paper(self):
-        self.cfg.core_mode, self.cfg.swing_mode = "live", "paper"
+    def test_paper_sleeves_get_equal_shares(self):
         _, sleeves, _ = run.make(self.cfg, FakeClient(), self.store)
-        self.assertEqual([type(s.broker).__name__ for s in sleeves], ["LiveBroker", "PaperBroker"])
-        self.assertEqual(sleeves[1].broker.balances()[0], Decimal("300.0"))
+        self.assertEqual([s.name for s in sleeves], ["4h", "8h", "12h", "1d"])
+        self.assertEqual([s.broker.balances()[0] for s in sleeves], [Decimal("250.0")] * 4)
 
-    def test_both_sleeves_run_and_total_adds_up(self):
-        h4 = synthetic_candles(n=1500, seed=3, freq="4h", vol=0.012)
-        client = FakeClient(candles={"4h": h4, "1d": daily_from(h4)})
+    def test_each_sleeve_reads_its_own_timeframe_and_stays_in_its_lane(self):
+        candles = ensemble_candles()
+        clock = Clock()
+        client = FakeClient([(0, "100.00", "100.01"), (5, "99.99", "100.00")], candles, clock)
+        seen = []
+        orig = client.klines
+        client.klines = lambda symbol, interval="1d", limit=1000: seen.append(interval) or orig(symbol, interval, limit)
         _, sleeves, _ = run.make(self.cfg, client, self.store)
-        results = run.run_once(self.cfg, client, sleeves, self.store)
-        self.assertEqual(set(results), {"core", "swing"})
+        with FakeTime(clock):
+            results = run.run_once(self.cfg, client, sleeves, self.store)
+        self.assertEqual(seen, ["4h", "8h", "12h", "1d"])
+        for tf, (sig, action, _) in results.items():
+            di = adx(candles[tf], 38, 9).iloc[-1]
+            self.assertEqual(sig["readings"]["di_plus"], round(float(di.di_plus), 2))
+            if action == "BUY":  # each sleeve spends only its own quarter (less at most a taker fee)
+                row = self.store.rows("SELECT * FROM equity WHERE strategy=?", tf)[-1]
+                self.assertAlmostEqual(row["cash"] + row["btc"] * 100.0, 250.0, delta=250 * 0.0003)
+        self.assertTrue(any(a == "BUY" for _, a, _ in results.values()))
         rows = {r["strategy"]: r for r in self.store.rows("SELECT * FROM equity")}
-        self.assertAlmostEqual(rows["total"]["value"], rows["core"]["value"] + rows["swing"]["value"])
-        self.assertAlmostEqual(rows["total"]["value"], 1000.0)
+        self.assertAlmostEqual(rows["total"]["value"], sum(rows[tf]["value"] for tf in self.cfg.timeframes))
+
+    def test_rejects_unknown_timeframes(self):
+        import os
+        from bot import config
+        os.environ["BOT_TIMEFRAMES"] = "4h,5h"
+        os.environ["BOT_DATA_DIR"] = self.tmp.name
+        try:
+            with self.assertRaises(SystemExit):
+                config.load()
+        finally:
+            del os.environ["BOT_TIMEFRAMES"], os.environ["BOT_DATA_DIR"]
 
 
 class TestDashboard(unittest.TestCase):
@@ -416,9 +375,8 @@ class TestDashboard(unittest.TestCase):
         self.tmp.cleanup()
 
     def serve(self, password=""):
-        cfg = make_cfg(self.tmp.name, dashboard_password=password, swing_enabled=True)
-        h4 = synthetic_candles(n=3000, seed=3, freq="4h", vol=0.012)
-        srv = web.make_server(cfg, port=0, client=FakeClient(candles={"4h": h4, "1d": daily_from(h4)}))
+        cfg = make_cfg(self.tmp.name, dashboard_password=password, timeframes=("4h", "8h", "12h", "1d"))
+        srv = web.make_server(cfg, port=0, client=FakeClient(candles=ensemble_candles()))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
@@ -428,10 +386,10 @@ class TestDashboard(unittest.TestCase):
         url = self.serve()
         self.assertIn(b"Cryptonomics Bot", urllib.request.urlopen(url + "/").read())
         s = json.loads(urllib.request.urlopen(url + "/api/status").read())
-        self.assertEqual([x["name"] for x in s["sleeves"]], ["core", "swing"])
-        self.assertEqual([x["mode"] for x in s["sleeves"]], ["paper", "paper"])
-        self.assertEqual(len(s["chart"]["dates"]), 365)
-        self.assertEqual(len(s["chart"]["swing"]["times"]), 180)
+        self.assertEqual([x["name"] for x in s["sleeves"]], ["4h", "8h", "12h", "1d"])
+        self.assertEqual(s["mode"], "paper")
+        self.assertEqual({tf: len(c["times"]) for tf, c in s["chart"].items()},
+                         {"4h": 180, "8h": 180, "12h": 180, "1d": 180})
 
     def test_password(self):
         url = self.serve(password="hunter2")

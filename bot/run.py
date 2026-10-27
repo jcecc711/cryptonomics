@@ -5,9 +5,9 @@
     python -m bot.run status      print the current state
     python -m bot.run web         start the dashboard
 
-Two sleeves share the account: "core" (daily DI cross, 70%) and "swing" (4h
-EMA cross inside the daily uptrend, 30%). Each tracks its own cash and BTC and
-can be paper or live on its own. Paper is the default.
+The ensemble: the DI(38) cross runs on each timeframe in BOT_TIMEFRAMES
+(default 4h, 8h, 12h, 1d), each as a sleeve with an equal share of the money
+and its own cash and BTC. Paper is the default.
 Create data/STOP to stop all new orders.
 """
 import fcntl
@@ -16,7 +16,7 @@ import sys
 import time
 from decimal import Decimal
 
-from . import config, strategy, swing
+from . import config, strategy
 from .binanceus import BinanceUS
 from .broker import LiveBroker, PaperBroker
 from .execution import execute
@@ -26,14 +26,13 @@ log = logging.getLogger("bot")
 
 
 class Sleeve:
-    """One strategy trading its own share of the money."""
+    """The DI cross on one timeframe, trading its own share of the money."""
 
-    def __init__(self, name, share, mode, broker, store, cfg, maker_timeout_min):
-        self.name, self.share, self.mode = name, share, mode
+    def __init__(self, name, share, mode, broker, store, cfg):
+        self.name, self.share, self.mode = name, share, mode   # name is the timeframe, e.g. "4h"
         self.broker, self.store, self.cfg = broker, store, cfg
-        self.maker_timeout_min = maker_timeout_min
 
-    # Sleeve balances: what this strategy owns, separate from the account total.
+    # Sleeve balances: what this sleeve owns, separate from the account total.
     @property
     def cash(self):
         return Decimal(self.store.get(f"{self.name}.cash", "0"))
@@ -50,31 +49,18 @@ class Sleeve:
     def funded(self):
         return self.store.get(f"{self.name}.cash") is not None
 
-    def evaluate(self, client, daily):
-        if self.name == "core":
-            return strategy.evaluate(daily, self.cfg.di_len, self.cfg.adx_smoothing)
-        candles = client.klines(self.cfg.symbol, "4h", limit=500)
-        return swing.evaluate(candles, daily, self.cfg.swing_fast, self.cfg.swing_slow,
-                              self.cfg.di_len, self.cfg.adx_smoothing)
-
     def decide(self, sig, holding):
         key = f"{self.name}.state"
-        if self.name == "core":
-            armed = self.store.get(key)
-            if armed is None:  # first run
-                armed = self.cfg.join_open_trend or not sig["trend_up"]
-            action, armed = strategy.decide(sig, holding, armed)
-            self.store.set(key, armed)
-        else:
-            action, state = swing.decide(sig, holding, self.store.get(key, {}))
-            self.store.set(key, state)
+        armed = self.store.get(key)
+        if armed is None:  # first run
+            armed = self.cfg.join_open_trend or not sig["trend_up"]
+        action, armed = strategy.decide(sig, holding, armed)
+        self.store.set(key, armed)
         return action
 
-    def summary(self, sig, trade, price):
-        return (strategy if self.name == "core" else swing).summary(sig, trade, price)
-
-    def step(self, client, daily, filters_cache):
-        sig = self.evaluate(client, daily)
+    def step(self, client, filters_cache):
+        candles = client.klines(self.cfg.symbol, self.name)
+        sig = strategy.evaluate(candles, self.cfg.di_len, self.cfg.adx_smoothing)
         trade = self.store.current_trade(self.name)
         action = self.decide(sig, trade is not None)
         note = ""
@@ -92,14 +78,14 @@ class Sleeve:
         quote, base = self.broker.balances()
         if action == "BUY":
             budget = min(self.cash, quote, Decimal(str(self.cfg.max_order_usd)))
-            f = execute("BUY", budget, self.broker, filters, self.store, self.cfg, self.name, self.maker_timeout_min)
+            f = execute("BUY", budget, self.broker, filters, self.store, self.cfg, self.name)
             if f.base > 0:
                 got = f.base - f.fee_base
                 self.set_balances(self.cash - f.quote - f.fee_quote, self.btc + got)
                 self.store.open_trade(self.name, f.avg_price, float(got), float(f.quote) + f.fee_usd)
             return f"bought {f.base} at {f.avg_price:,.2f}" if f.base else "buy did not fill"
         qty = min(self.btc, base)
-        f = execute("SELL", qty, self.broker, filters, self.store, self.cfg, self.name, self.maker_timeout_min)
+        f = execute("SELL", qty, self.broker, filters, self.store, self.cfg, self.name)
         if f.base > 0:
             self.set_balances(self.cash + f.quote - f.fee_quote, self.btc - f.base)
             if f.base >= Decimal(str(trade["qty"])) * Decimal("0.99"):
@@ -112,20 +98,13 @@ class Sleeve:
 def make(cfg, client=None, store=None):
     client = client or BinanceUS(cfg.api_key, cfg.api_secret)
     store = store or Store(cfg.db_path)
-    live = None
+    share = 1 / len(cfg.timeframes)
+    live = LiveBroker(client, cfg.symbol, cfg.base_asset, cfg.quote_asset) if cfg.mode == "live" else None
     sleeves = []
-    specs = [("core", cfg.core_share, cfg.maker_timeout_min)]
-    if cfg.swing_enabled:
-        specs.append(("swing", cfg.swing_share, cfg.swing_maker_timeout_min))
-    for name, share, timeout in specs:
-        mode = cfg.sleeve_mode(name)
-        if mode == "live":
-            live = live or LiveBroker(client, cfg.symbol, cfg.base_asset, cfg.quote_asset)
-            broker = live
-        else:
-            broker = PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee, cfg.paper_taker_fee,
-                                 cfg.paper_start_usd * share, key=f"paper.{name}")
-        sleeves.append(Sleeve(name, share, mode, broker, store, cfg, timeout))
+    for tf in cfg.timeframes:
+        broker = live or PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee, cfg.paper_taker_fee,
+                                     cfg.paper_start_usd * share, key=f"paper.{tf}")
+        sleeves.append(Sleeve(tf, share, cfg.mode, broker, store, cfg))
     return client, sleeves, store
 
 
@@ -148,12 +127,11 @@ def run_once(cfg, client, sleeves, store):
         for o in broker.cancel_leftovers():
             log.warning("cancelled leftover order %s (%s, filled %s)", o["orderId"], o["status"], o["executedQty"])
     fund(sleeves)
-    daily = client.klines(cfg.symbol, "1d")
     cache, results, ts = {}, {}, now()
     for s in sleeves:
         try:
-            results[s.name] = s.step(client, daily, cache)
-        except Exception as e:  # one sleeve failing shouldn't stop the other
+            results[s.name] = s.step(client, cache)
+        except Exception as e:  # one sleeve failing shouldn't stop the others
             log.exception("%s sleeve failed", s.name)
             results[s.name] = (None, None, f"error: {e}")
 
@@ -166,7 +144,7 @@ def run_once(cfg, client, sleeves, store):
         total_cash, total_btc = total_cash + cash, total_btc + btc
         store.snapshot(ts, s.name, cash, btc, price)
         sig, action, note = results[s.name]
-        text = s.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
+        text = strategy.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
         report[s.name] = {"summary": text, "note": note, "mode": s.mode, "share": s.share}
         log.info("[%s/%s] %s %s", s.name, s.mode, text, note)
     store.snapshot(ts, "total", total_cash, total_btc, price)
