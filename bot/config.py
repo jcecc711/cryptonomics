@@ -1,19 +1,33 @@
 """Settings, read from environment variables (or a .env file in the repo root)."""
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def load_dotenv(path=ROOT / ".env"):
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
+def parse_dotenv(text):
+    """KEY=value lines; '#' starts a comment (whole line, or after a space in an unquoted value)."""
+    out = {}
+    for line in text.splitlines():
         line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.strip()
+        if v[:1] in ('"', "'") and v[0] in v[1:]:
+            v = v[1:v.index(v[0], 1)]
+        else:
+            v = re.split(r"\s+#", v, maxsplit=1)[0].strip()
+        out[k.strip()] = v
+    return out
+
+
+def load_dotenv(path=ROOT / ".env"):
+    if path.exists():
+        for k, v in parse_dotenv(path.read_text()).items():
+            os.environ.setdefault(k, v)
 
 
 def _bool(name, default):

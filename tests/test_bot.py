@@ -117,6 +117,35 @@ class TestSigning(unittest.TestCase):
         self.assertFalse(BinanceError(400, -2010, "Account has insufficient balance").would_take)
 
 
+class TestSettingsFile(unittest.TestCase):
+    def test_inline_comments_and_quotes(self):
+        from bot.config import parse_dotenv
+        env = parse_dotenv('A=1000000   # hard cap\n# full-line comment\nB="x # not a comment"\nC=\nD=a#b\n')
+        self.assertEqual(env, {"A": "1000000", "B": "x # not a comment", "C": "", "D": "a#b"})
+
+    def test_env_example_loads_cleanly(self):
+        """The shipped .env.example, copied to .env as the setup guide says, must load."""
+        import os
+        from bot import config
+        env = config.parse_dotenv((config.ROOT / ".env.example").read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            env["BOT_DATA_DIR"] = tmp
+            saved = {k: os.environ.get(k) for k in env}
+            os.environ.update(env)
+            try:
+                cfg = config.load()
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+        self.assertEqual(cfg.mode, "paper")
+        self.assertEqual(cfg.timeframes, ("4h", "8h", "12h", "1d"))
+        self.assertEqual(cfg.max_order_usd, 1_000_000)
+        self.assertEqual(cfg.maker_timeout_min, 10)
+
+
 class TestKlines(unittest.TestCase):
     def test_drops_the_still_forming_candle_for_every_interval_the_bot_uses(self):
         from bot import binanceus
