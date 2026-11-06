@@ -100,6 +100,7 @@ sleeve holds.
     python bench/dip_buy.py                           # short-timeframe dip buying
     python bench/strategy_scan.py                     # 8 strategy families x 7 timeframes
     python bench/di_timeframes.py                     # DI cross across timeframes + ensemble
+    python bench/ema_cross.py                         # EMA 8/13 cross, long / short, 15m-1d
 
 - `bench/data.py` downloads and caches Binance.US and Coinbase candles in `data/`.
 - `bench/indicators.py` has EMA, SMA and ADX/DI matching TradingView.
