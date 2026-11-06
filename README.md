@@ -14,6 +14,14 @@ the money (8 x 12.5%) and its own cash and BTC:
 
 Spot only: each sleeve is either in BTC or in cash.
 
+**Bear filter (halving cycle):** days 540-910 after each halving have held the
+post-top bear market in every cycle so far (2018, 2022, 2025-26). In that window
+the bot takes no new longs and exits open ones (`BOT_BEAR_FILTER=halving`; next
+window about Oct 2029 - Oct 2030). Tested in `bench/regime_study.py`: about 99%
+a year with a 30% worst drawdown versus 91% / 39% without it. The dashboard's
+Market Regime panel shows the cycle position, the bull/bear call and price
+against the 200-day, 50-week and 20/21-week averages.
+
 Tested on BTC 2016 -> Oct 2025 (`bench/strategy_scan.py`, `di_timeframes.py`,
 `adx14.py`, `adx_hybrid.py`). The DI crossover alone returned about 92% a year
 with a 39% worst drawdown; the 50/50 blend with the ADX trigger about 77% a year

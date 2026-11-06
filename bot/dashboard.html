@@ -108,6 +108,25 @@ main { min-width: 0; padding: 20px 24px 64px; }
 .stat { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
 .stat .k { font-size: 12px; color: var(--muted); }
 .stat .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* market regime */
+.regime { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 22px; align-items: start; }
+.callrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+.call { font-size: 20px; font-weight: 800; padding: 6px 16px; border-radius: 12px; color: #fff; letter-spacing: .02em; }
+.c-Bull { background: linear-gradient(135deg, #12a150, #2bb5a0); } .c-Bear { background: linear-gradient(135deg, #e5484d, #b146f0); }
+.c-Neutral { background: var(--g2); } .c-Caution { background: linear-gradient(135deg, #d9822b, #f08c00); } .c-Unknown { background: #9098aa; }
+.cycle { position: relative; margin: 26px 0 6px; }
+.cycle .track { display: flex; height: 14px; border-radius: 999px; overflow: hidden; }
+.cycle .track i { display: block; height: 100%; }
+.cycle .now { position: absolute; top: -22px; transform: translateX(-50%); font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+.cycle .now::after { content: ""; position: absolute; left: 50%; top: 17px; width: 2px; height: 22px; background: var(--text); transform: translateX(-50%); }
+.cycle .legend2 { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.cycle .legend2 span i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.dates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.checks .row b { font-weight: 600; }
+.ok { color: var(--good); font-weight: 700; } .no { color: var(--bad); font-weight: 700; }
+.chip-reg { font-size: 11.5px; font-weight: 800; padding: 4px 9px; border-radius: 999px; color: #fff; letter-spacing: .03em; }
+@media (max-width: 900px) { .regime { grid-template-columns: 1fr; } .dates { grid-template-columns: 1fr 1fr; } }
+
 /* buttons & chips */
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 9px; border: 1px solid var(--line);
   background: var(--panel); cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; }
@@ -272,6 +291,7 @@ td.num, th.num { text-align: right; }
       <div class="right">
         <span id="mode" class="badge b-paper">PAPER</span>
         <span id="kill" class="badge b-kill" hidden>KILL SWITCH ON</span>
+        <span id="reg-chip" class="chip-reg" hidden></span>
         <div class="ticker" title="Live BTC price (Binance.US)"><span class="muted">BTC</span><b id="tk-price">–</b><span id="tk-chg"></span></div>
         <button class="iconbtn" id="bell" title="Trade alerts" aria-pressed="false"><svg><use href="#i-bell"/></svg></button>
         <button class="iconbtn" id="theme" title="Switch theme"><svg><use href="#i-moon"/></svg></button>
@@ -285,6 +305,11 @@ td.num, th.num { text-align: right; }
         <div class="kpi" style="background:var(--g2)"><div class="k">vs. just holding BTC</div><div class="v" id="k-edge">–</div><div class="s" id="k-edge-s">&nbsp;</div><svg class="bgicon"><use href="#i-trend"/></svg></div>
         <div class="kpi" style="background:var(--g3)"><div class="k">In BTC right now</div><div class="v" id="k-exp">–</div><div class="s" id="k-exp-s">&nbsp;</div><svg class="bgicon"><use href="#i-pie"/></svg></div>
         <div class="kpi" style="background:var(--g4)"><div class="k">Closed trades</div><div class="v" id="k-trades">–</div><div class="s" id="k-trades-s">&nbsp;</div><svg class="bgicon"><use href="#i-target"/></svg></div>
+      </div>
+      <div class="panel" style="margin-bottom:16px">
+        <div class="phead"><h2><span class="ic" style="background:var(--g3)"><svg><use href="#i-target"/></svg></span>Market regime</h2>
+          <div class="act"><span class="muted" id="reg-asof"></span></div></div>
+        <div class="regime" id="regime"><div class="empty"><span class="spin"></span></div></div>
       </div>
       <div class="sleeves" id="sleeves"></div>
       <div class="grid2">
@@ -491,9 +516,42 @@ async function refresh() {
   $("#side-mode").innerHTML = `<span class="badge ${s.mode === "live" ? "b-live" : "b-paper"}">${s.mode.toUpperCase()} TRADING</span>`;
   $("#kill").hidden = !s.kill_switch;
   $("#side-run").textContent = s.last_run ? "Last run " + new Date(toSec(s.last_run.time) * 1000).toLocaleString() : "Not run yet";
-  renderOverview(); renderTrades(); renderActivity(); renderSettings();
+  renderRegime(); renderOverview(); renderTrades(); renderActivity(); renderSettings();
   Equity.update(); Charts.markers();
   notifyNew(prev, s);
+}
+
+function renderRegime() {
+  const g = S.status && S.status.regime, box = $("#regime");
+  if (!g) { box.innerHTML = '<div class="empty">No regime reading yet.</div>'; return; }
+  const chip = $("#reg-chip"); chip.hidden = false; chip.className = "chip-reg c-" + g.call; chip.textContent = g.call.toUpperCase() + " BIAS";
+  const filt = S.status.settings.bear_filter, fmtD = s => new Date(s + "T00:00:00Z").toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric", timeZone: "UTC"});
+  const C = g.cycle_days, pctx = x => (100 * Math.min(Math.max(x, 0), C) / C).toFixed(2);
+  const segs = [[0, 180, "#2bb5a0", "Build-up"], [180, 540, "#12a150", "Bull run"], [540, 910, "#e5484d", "Bear window"], [910, C, "#8b5cf6", "Recovery"]];
+  const filterTxt = filt !== "halving" ? "Bear filter is off." : g.calendar_bear
+    ? "<b class='bad'>Bear filter ACTIVE:</b> no new longs, open longs are exited."
+    : `Bear filter on: next active ${fmtD(g.bear_window[0])}${g.bear_window_estimated ? " (est.)" : ""}.`;
+  $("#reg-asof").textContent = "as of " + fmtD(g.as_of);
+  box.innerHTML = `<div>
+      <div class="callrow"><span class="call c-${esc(g.call)}">${esc(g.call)}</span><div><div><b>${esc(g.phase)}</b> · day ${g.days_since_halving} of the halving cycle</div>
+        <div class="muted" style="font-size:13px">${esc(g.bias)}</div></div></div>
+      <div class="cycle">
+        <div class="now" style="left:${pctx(g.days_since_halving)}%">Today</div>
+        <div class="track">${segs.map(([a, b, col]) => `<i style="width:${pctx(b) - pctx(a)}%;background:${col}"></i>`).join("")}</div>
+        <div class="legend2">${segs.map(([a, b, col, n]) => `<span><i style="background:${col}"></i>${n} (days ${a}–${b === C ? C : b})</span>`).join("")}</div>
+      </div>
+      <div class="dates">
+        <div class="stat"><div class="k">Last halving</div><div class="v" style="font-size:15px">${fmtD(g.halving)}</div></div>
+        <div class="stat"><div class="k">${g.calendar_bear ? "Bear window (now)" : "Next bear window"}</div><div class="v" style="font-size:15px">${fmtD(g.bear_window[0])} – ${fmtD(g.bear_window[1])}${g.bear_window_estimated ? " *" : ""}</div></div>
+        <div class="stat"><div class="k">Next halving</div><div class="v" style="font-size:15px">${fmtD(g.next_halving)}${g.next_halving_estimated ? " *" : ""}</div></div>
+      </div>
+      <div class="note">${filterTxt}${g.next_halving_estimated ? " * estimated from block times." : ""}</div>
+    </div>
+    <div class="checks">
+      <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Price ${price(g.price)} vs. long-term averages</div>
+      ${g.checks.map(c => `<div class="row"><span class="l">${esc(c.name)}</span><span>${price(c.value)} · <span class="${c.above ? "ok" : "no"}">${c.above ? "above" : "below"} ${(c.gap >= 0 ? "+" : "") + c.gap.toFixed(1)}%</span></span></div>`).join("")}
+      <div class="note">The bull/bear call comes from the halving calendar: days 540–910 after each halving have held the post-top bear market in every cycle so far (2018, 2022, 2025–26). These averages are context: on their own they also trip during bull-market pullbacks.</div>
+    </div>`;
 }
 
 function sleeveState(sl) {
@@ -672,7 +730,8 @@ function renderSettings() {
   const c = S.status.settings;
   const rows = [["Mode", c.mode === "live" ? "Live (real money)" : "Paper (practice)"], ["Pair", c.symbol], ["Timeframes", c.timeframes.join(", ")],
     ["Strategies", (c.strategies || ["di"]).map(k => k === "adx" ? `ADX-${c.adx_level} trigger` : "DI crossover").join(" + ") + ", equal shares"],
-    ["Indicator settings", `DI length ${c.di_len}, ADX smoothing ${c.adx_smoothing}`], ["Join a trend already running", c.join_open_trend ? "Yes" : "No, wait for a fresh cross"],
+    ["Indicator settings", `DI length ${c.di_len}, ADX smoothing ${c.adx_smoothing}`],
+    ["Bear filter", c.bear_filter === "halving" ? "On: no longs in the halving-cycle bear window (days 540–910)" : "Off"], ["Join a trend already running", c.join_open_trend ? "Yes" : "No, wait for a fresh cross"],
     ["Max order per sleeve", usd(c.max_order_usd)], ["Maker order patience", c.maker_timeout_min + " min, then " + (c.taker_fallback ? "cross the spread (max " + (c.max_slippage * 100).toFixed(1) + "%)" : "give up")],
     ["Paper starting balance", usd(c.paper_start_usd)], ["Dashboard password", c.password_set ? "Set" : "Not set"], ["Kill switch", S.status.kill_switch ? "ON: no new orders" : "Off"]];
   $("#s-bot").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join("");

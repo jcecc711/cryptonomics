@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bench.indicators import adx, ema, rma, sma
 
+from . import regime as regime_mod
 from .binanceus import BinanceUS
 from .store import Store
 
@@ -157,6 +158,11 @@ def watchlist(cfg, store, client, lock):
     return {"symbols": rows, "timeframes": list(ANALYSIS_TFS)}
 
 
+def market_regime(cfg, client):
+    """Fresh regime readings for the dashboard (the bot stores its own each run)."""
+    return _cache.get(("regime", cfg.symbol), 300, lambda: regime_mod.assess(client.klines(cfg.symbol, "1d")))
+
+
 def status(cfg, store, lock):
     with lock:
         sleeves, specs = [], cfg.sleeve_specs()
@@ -180,6 +186,7 @@ def status(cfg, store, lock):
             "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),
             "settings": {"mode": cfg.mode, "symbol": cfg.symbol, "timeframes": list(cfg.timeframes),
                          "strategies": list(cfg.strategies), "adx_level": cfg.adx_level,
+                         "bear_filter": cfg.bear_filter,
                          "di_len": cfg.di_len, "adx_smoothing": cfg.adx_smoothing,
                          "join_open_trend": cfg.join_open_trend, "max_order_usd": cfg.max_order_usd,
                          "maker_timeout_min": cfg.maker_timeout_min, "taker_fallback": cfg.taker_fallback,
@@ -237,7 +244,14 @@ def make_handler(cfg, store, client):
                 if url.path in ("/", "/index.html"):
                     return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
                 if url.path == "/api/status":
-                    return self._send(200, status(cfg, store, lock))
+                    out = status(cfg, store, lock)
+                    try:
+                        out["regime"] = market_regime(cfg, client)
+                    except Exception as e:  # Binance.US unreachable: fall back to the bot's last reading
+                        with lock:
+                            out["regime"] = store.get("regime")
+                        out["regime_error"] = str(e)
+                    return self._send(200, out)
                 if url.path == "/api/candles":
                     tf = (q.get("tf") or ["4h"])[0]
                     if tf not in CHART_TFS:

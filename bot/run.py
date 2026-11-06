@@ -16,7 +16,7 @@ import sys
 import time
 from decimal import Decimal
 
-from . import config, strategy
+from . import config, regime, strategy
 from .binanceus import BinanceUS
 from .broker import LiveBroker, PaperBroker
 from .execution import execute
@@ -79,12 +79,19 @@ class Sleeve:
         trade = self.store.current_trade(self.name)
         action = self.decide(sig, trade is not None)
         note = ""
+        reg = filters_cache.get("regime")
+        if reg and reg.get("calendar_bear") and self.cfg.bear_filter == "halving":
+            # bear window: no new longs, and get out of any long still open
+            if action == "BUY":
+                action, note = None, "bear filter: skipped a buy signal (halving-cycle bear window)"
+            elif trade is not None and action is None:
+                action, note = "SELL", "bear filter: exiting (halving-cycle bear window)"
         if action and self.cfg.stop_file.exists():
             note, action = f"kill switch ({self.cfg.stop_file.name}) is on, skipped {action}", None
         elif action:
             if "filters" not in filters_cache:
                 filters_cache["filters"] = client.filters(self.cfg.symbol)
-            note = self.trade(action, trade, filters_cache["filters"])
+            note = (note + "; " if note else "") + self.trade(action, trade, filters_cache["filters"])
         self.store.record_signal(self.name, sig, action or ("HOLD" if self.store.current_trade(self.name) else "WAIT"),
                                  note)
         return sig, action, note
@@ -144,6 +151,11 @@ def run_once(cfg, client, sleeves, store):
             log.warning("cancelled leftover order %s (%s, filled %s)", o["orderId"], o["status"], o["executedQty"])
     fund(sleeves)
     cache, results, ts = {}, {}, now()
+    try:
+        cache[("candles", "1d")] = client.klines(cfg.symbol, "1d")
+        cache["regime"] = regime.assess(cache[("candles", "1d")])
+    except Exception:
+        log.exception("regime check failed; trading without the bear filter this run")
     for s in sleeves:
         try:
             results[s.name] = s.step(client, cache)
@@ -165,6 +177,10 @@ def run_once(cfg, client, sleeves, store):
         log.info("[%s/%s] %s %s", s.name, s.mode, text, note)
     store.snapshot(ts, "total", total_cash, total_btc, price)
     store.set("last_run", {"time": ts, "sleeves": report})
+    if cache.get("regime"):
+        store.set("regime", cache["regime"])
+        log.info("regime: %s (%s, day %s of the halving cycle)", cache["regime"]["call"],
+                 cache["regime"]["phase"], cache["regime"]["days_since_halving"])
     return results
 
 

@@ -50,6 +50,9 @@ class Config:
     timeframes: tuple = ("4h", "8h", "12h", "1d")
     strategies: tuple = ("di", "adx")
     adx_level: float = 14.0
+    # "halving": in the halving-cycle bear window (days 540-910 after a halving)
+    # take no new longs and exit open ones. "off": ignore the regime.
+    bear_filter: str = "halving"
 
     # Buy only on a fresh DI+ cross. If the bot starts while DI+ is already
     # above DI-, it waits for the next cross unless this is on.
@@ -103,6 +106,7 @@ def load():
         timeframes=tuple(t.strip() for t in e("BOT_TIMEFRAMES", "4h,8h,12h,1d").split(",") if t.strip()),
         strategies=tuple(t.strip().lower() for t in e("BOT_STRATEGIES", "di,adx").split(",") if t.strip()),
         adx_level=float(e("BOT_ADX_LEVEL", 14)),
+        bear_filter=e("BOT_BEAR_FILTER", "halving").lower(),
         join_open_trend=_bool("BOT_JOIN_OPEN_TREND", False),
         max_order_usd=float(e("BOT_MAX_ORDER_USD", 1_000_000)),
         maker_timeout_min=float(e("BOT_MAKER_TIMEOUT_MIN", 10)),
@@ -125,6 +129,8 @@ def load():
     bad = [t for t in cfg.timeframes if t not in INTERVAL_MS]
     if bad or not cfg.timeframes or len(set(cfg.timeframes)) != len(cfg.timeframes):
         raise SystemExit(f"BOT_TIMEFRAMES must be distinct values from {sorted(INTERVAL_MS)}, got {cfg.timeframes}")
+    if cfg.bear_filter not in ("halving", "off"):
+        raise SystemExit(f"BOT_BEAR_FILTER must be 'halving' or 'off', got {cfg.bear_filter!r}")
     if not cfg.strategies or set(cfg.strategies) - {"di", "adx"} or len(set(cfg.strategies)) != len(cfg.strategies):
         raise SystemExit(f"BOT_STRATEGIES must be one or both of di, adx; got {cfg.strategies}")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)

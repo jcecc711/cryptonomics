@@ -157,6 +157,7 @@ class TestSettingsFile(unittest.TestCase):
         self.assertEqual(cfg.max_order_usd, 1_000_000)
         self.assertEqual(cfg.maker_timeout_min, 10)
         self.assertEqual(cfg.strategies, ("di", "adx"))
+        self.assertEqual(cfg.bear_filter, "halving")
         self.assertEqual(cfg.adx_level, 14)
 
 
@@ -283,6 +284,74 @@ class TestAdxTrigger(unittest.TestCase):
     def test_sells_when_di_minus_takes_over(self):
         sig, _ = self.sig([False], trend_up=False)
         self.assertEqual(strategy.decide_adx(sig, True, {})[0], "SELL")
+
+
+class TestRegime(unittest.TestCase):
+    def test_calendar_matches_past_cycles(self):
+        from bot import regime
+        # tops just before the window, bear years inside it, bottoms at its end
+        for day, bear in [("2017-12-17", False), ("2018-06-01", True), ("2018-12-15", True), ("2019-03-01", False),
+                          ("2021-11-10", True), ("2022-06-18", True), ("2022-11-21", False),
+                          ("2025-10-06", False), ("2026-05-01", True), ("2026-11-06", False), ("2029-12-01", True)]:
+            self.assertEqual(regime.calendar_bear(day), bear, day)
+
+    def test_assess_is_json_ready_and_calls_bear_in_the_window(self):
+        from bot import regime
+        d = synthetic_candles(n=900)                         # 2022-01-01 ...
+        r = regime.assess(d.loc[:"2022-06-30"])
+        json.dumps(r)
+        self.assertEqual((r["call"], r["phase"], r["calendar_bear"]), ("Bear", "Bear market", True))
+        self.assertEqual(r["bear_window"], ["2021-11-02", "2022-11-07"])
+        r = regime.assess(d.loc[:"2023-06-30"])
+        self.assertFalse(r["calendar_bear"])
+        self.assertEqual(r["bear_window"][0], "2025-10-12")
+        self.assertEqual(len(r["checks"]), 4)
+
+
+class TestBearFilter(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = make_cfg(self.tmp.name, join_open_trend=True, paper_start_usd=1000)
+        self.store = Store(self.cfg.db_path)
+        self.d = synthetic_candles(n=1600)                   # 2022-01-01 -> mid 2026
+        di = adx(self.d, 38, 9)
+        self.up = di.di_plus > di.di_minus
+
+    def tearDown(self):
+        self.store.db.close()
+        self.tmp.cleanup()
+
+    def run_at(self, day):
+        clock = Clock()
+        client = FakeClient([(0, "100.00", "100.01"), (5, "99.99", "100.00")], self.d.loc[:day], clock)
+        _, sleeves, _ = run.make(self.cfg, client, self.store)
+        with FakeTime(clock):
+            return run.run_once(self.cfg, client, sleeves, self.store)["1d"]
+
+    def up_day(self, start, end):
+        days = self.up.loc[start:end]
+        return days[days].index[-1]
+
+    def test_skips_buys_in_a_bear_window(self):
+        _, action, note = self.run_at(self.up_day("2022-03-01", "2022-10-31"))
+        self.assertIsNone(action)
+        self.assertIn("bear filter", note)
+        self.assertEqual(self.store.rows("SELECT * FROM orders"), [])
+        self.assertEqual(self.store.get("regime")["call"], "Bear")
+
+    def test_buys_outside_and_exits_when_a_bear_window_starts(self):
+        _, action, _ = self.run_at(self.up_day("2023-01-01", "2023-12-31"))
+        self.assertEqual(action, "BUY")
+        # a later day with DI+ still on top, but inside the 2025-26 bear window
+        _, action, note = self.run_at(self.up_day("2025-10-13", "2026-05-01"))
+        self.assertEqual(action, "SELL")
+        self.assertIn("bear filter: exiting", note)
+        self.assertIsNone(self.store.current_trade("1d"))
+
+    def test_filter_off_ignores_the_calendar(self):
+        self.cfg.bear_filter = "off"
+        _, action, _ = self.run_at(self.up_day("2022-03-01", "2022-10-31"))
+        self.assertEqual(action, "BUY")
 
 
 class TestPaperExecution(unittest.TestCase):
@@ -435,7 +504,8 @@ class TestEnsemble(unittest.TestCase):
         _, sleeves, _ = run.make(self.cfg, client, self.store)
         with FakeTime(clock):
             results = run.run_once(self.cfg, client, sleeves, self.store)
-        self.assertEqual(seen, ["4h", "8h", "12h", "1d"])
+        # daily candles come first (for the regime check) and the 1d sleeve reuses them
+        self.assertEqual(seen, ["1d", "4h", "8h", "12h"])
         for tf, (sig, action, _) in results.items():
             di = adx(candles[tf], 38, 9).iloc[-1]
             self.assertEqual(sig["readings"]["di_plus"], round(float(di.di_plus), 2))
@@ -553,6 +623,8 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual([x["name"] for x in s["sleeves"]], ["4h", "8h", "12h", "1d"])
         self.assertEqual(s["mode"], "paper")
         self.assertEqual(s["settings"]["di_len"], 38)
+        self.assertIn(s["regime"]["call"], ("Bull", "Neutral", "Caution", "Bear"))
+        self.assertEqual(s["settings"]["bear_filter"], "halving")
 
     def test_candles_page_back_through_history(self):
         url = self.serve()
