@@ -96,7 +96,9 @@ def make_cfg(tmp, **kw):
 def ensemble_candles(n=3000):
     h4 = synthetic_candles(n=n, seed=3, freq="4h", vol=0.012)
     agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    return {"4h": h4, "8h": h4.resample("8h").agg(agg), "12h": h4.resample("12h").agg(agg), "1d": daily_from(h4)}
+    return {"1h": synthetic_candles(n=1200, seed=5, freq="1h", vol=0.006),
+            "4h": h4, "6h": h4.resample("6h").agg(agg).dropna(), "8h": h4.resample("8h").agg(agg),
+            "12h": h4.resample("12h").agg(agg), "1d": daily_from(h4)}
 
 
 class FakeTime:
@@ -461,6 +463,17 @@ class TestDashboard(unittest.TestCase):
         self.assertLess(older["t"][-1], latest["t"][0])
         self.get(url + "/api/candles?symbol=NOPE&tf=4h", expect=400)
         self.get(url + "/api/candles?tf=5h", expect=400)
+
+    def test_3h_candles_built_from_1h(self):
+        url = self.serve()
+        h1 = self.candles["1h"]
+        r = self.get(url + "/api/candles?symbol=BTCUSDT&tf=3h&limit=50")
+        self.assertTrue(all(t % 10800 == 0 for t in r["t"]))          # aligned to midnight UTC
+        t0 = pd.Timestamp(r["t"][5], unit="s")
+        grp = h1.loc[t0: t0 + pd.Timedelta(minutes=179)]
+        self.assertEqual((r["o"][5], r["h"][5], r["l"][5], r["c"][5]),
+                         (round(grp.open.iloc[0], 8), round(grp.high.max(), 8), round(grp.low.min(), 8), round(grp.close.iloc[-1], 8)))
+        self.get(url + "/api/candles?symbol=BTCUSDT&tf=6h&limit=20")
 
     def test_watchlist_analysis_and_editing(self):
         url = self.serve()

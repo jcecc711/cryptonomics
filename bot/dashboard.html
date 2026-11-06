@@ -407,7 +407,7 @@ const price = x => x == null ? "–" : x >= 1000 ? usd(x, 0) : x >= 1 ? usd(x, 2
 const pct = (x, d = 1) => x == null || isNaN(x) ? "–" : (x >= 0 ? "+" : "") + (x * 100).toFixed(d) + "%";
 const cls = x => x == null ? "" : x >= 0 ? "good" : "bad";
 const big = x => x == null ? "–" : x >= 1e9 ? "$" + (x / 1e9).toFixed(2) + "B" : x >= 1e6 ? "$" + (x / 1e6).toFixed(2) + "M" : x >= 1e3 ? "$" + (x / 1e3).toFixed(1) + "K" : usd(x);
-const TF_SEC = {"15m": 900, "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400, "1w": 604800};
+const TF_SEC = {"15m": 900, "1h": 3600, "2h": 7200, "3h": 10800, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400, "1w": 604800};
 const toSec = ts => Math.floor(Date.parse(ts.replace(" ", "T") + "Z") / 1000);   // store timestamps are UTC
 const hms = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
   return (h ? h + "h " : "") + String(m).padStart(h ? 2 : 1, "0") + "m " + String(x).padStart(2, "0") + "s"; };
@@ -942,7 +942,7 @@ const Charts = (() => {
 
   /* toolbar */
   function renderToolbar() {
-    $("#c-tf").innerHTML = ["15m", "1h", "4h", "8h", "12h", "1d", "1w"].map(t => `<button data-tf="${t}" aria-pressed="${t === st.tf}">${t}</button>`).join("");
+    $("#c-tf").innerHTML = ["15m", "1h", "3h", "4h", "6h", "8h", "12h", "1d", "1w"].map(t => `<button data-tf="${t}" aria-pressed="${t === st.tf}">${t}</button>`).join("");
     $$("#c-tf button").forEach(b => b.onclick = () => { st.tf = b.dataset.tf; store.set("ctf", st.tf); renderToolbar(); rebuild(); });
     $$("#c-type button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.t === st.type); b.onclick = () => { st.type = b.dataset.t; store.set("ctype", st.type); renderToolbar(); rebuild(true); }; });
   }

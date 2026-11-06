@@ -34,7 +34,8 @@ PAGE = Path(__file__).with_name("dashboard.html")
 DEFAULT_WATCHLIST = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT",
                      "AVAXUSDT", "LINKUSDT", "LTCUSDT", "DOTUSDT"]
 ANALYSIS_TFS = ("4h", "8h", "12h", "1d")
-CHART_TFS = ("15m", "1h", "4h", "8h", "12h", "1d", "1w")
+CHART_TFS = ("15m", "1h", "3h", "4h", "6h", "8h", "12h", "1d", "1w")
+BUILT = {"3h": ("1h", 3)}   # timeframes Binance.US doesn't offer: built from a smaller one
 MAX_WATCHLIST = 30
 
 
@@ -78,10 +79,26 @@ def _num(x, nd=2):
 
 # -- data ------------------------------------------------------------------
 
+def _built(client, symbol, tf, end, limit):
+    """e.g. 3h candles from 1h ones, aligned to midnight UTC; a partial first group is dropped."""
+    src, k = BUILT[tf]
+    raw = client.klines(symbol, src, limit=min(1000, limit * k), end_time=end, closed_only=False)
+    g = raw.resample(tf, label="left", closed="left")
+    df = g.agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    counts = g.size()
+    if len(df) and counts.iloc[0] < k:
+        df = df.iloc[1:]
+    return df, len(raw) == min(1000, limit * k)
+
+
 def candles(client, symbol, tf, end=None, limit=1000):
     def load():
-        df = client.klines(symbol, tf, limit=limit, end_time=end, closed_only=False)
-        return {"symbol": symbol, "tf": tf, "has_more": len(df) == limit,
+        if tf in BUILT:
+            df, more = _built(client, symbol, tf, end, limit)
+        else:
+            df = client.klines(symbol, tf, limit=limit, end_time=end, closed_only=False)
+            more = len(df) == limit
+        return {"symbol": symbol, "tf": tf, "has_more": more,
                 "t": [int(t.timestamp()) for t in df.index],
                 "o": df.open.round(8).tolist(), "h": df.high.round(8).tolist(),
                 "l": df.low.round(8).tolist(), "c": df.close.round(8).tolist(),
