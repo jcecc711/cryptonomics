@@ -25,7 +25,7 @@ in the twelve months to Oct 2026).
     cp .env.example .env            # paper mode by default
     python -m bot.run once          # evaluate the latest closed candles and act
     python -m bot.run loop          # keep running: 5 minutes past every hour
-    python -m bot.run web           # dashboard at http://127.0.0.1:8080
+    python -m bot.run web           # dashboard app at http://127.0.0.1:8080
     python -m bot.run status
 
 - **Paper mode** (default) simulates orders against the live Binance.US order
@@ -42,6 +42,12 @@ in the twelve months to Oct 2026).
   won't buy into a trend that is already running; it waits for the next fresh
   cross up.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
+- **Dashboard app:** overview (account vs. holding BTC, sleeves with DI gauges and
+  candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and
+  scroll back through history, resizable and full-screen panes, your MA/EMA set,
+  volume, Bollinger, DI/ADX, RSI, MACD, Stochastic, ATR, horizontal / trend /
+  Fibonacci / measure tools), a watchlist of other Binance.US coins scored with
+  the bot's DI rule, trades with CSV export, activity, and trade alerts.
 - Everything is recorded in `data/bot_paper.sqlite` or `data/bot_live.sqlite` (tagged by sleeve)
   and shown on the dashboard. Paper and live never share balances or trades.
 

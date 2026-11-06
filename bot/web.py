@@ -1,80 +1,180 @@
-"""Dashboard: one page plus a JSON endpoint, served with the standard library.
+"""Dashboard web app, served with the standard library.
 
     python -m bot.run web       -> http://127.0.0.1:8080
 
-Set DASHBOARD_PASSWORD to require a password (any username). Keep the default
-127.0.0.1 binding unless it sits behind a password and HTTPS.
+Endpoints (all behind DASHBOARD_PASSWORD when set, any username):
+    GET  /                      the app (dashboard.html)
+    GET  /api/status            bot state: sleeves, equity, trades, signals, orders, settings
+    GET  /api/candles           ?symbol=BTCUSDT&tf=4h[&end=<ms>][&limit=1000] OHLCV, newest last;
+                                `end` pages back through history; includes the forming candle
+    GET  /api/price             ?symbol=BTCUSDT  live price and 24h change
+    GET  /api/watchlist         watched coins with price, 24h change and DI trend on 4h/8h/12h/1d
+    POST /api/watchlist         {"symbols": [...]} replace the watched coins
+    GET  /api/symbols           coins tradable on Binance.US (USDT / USD / USDC quotes)
+
+Keep the default 127.0.0.1 binding unless it sits behind a password and a
+private network (Tailscale) or HTTPS.
 """
 import base64
 import hmac
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from . import strategy
-from bench.indicators import ema, sma
+from bench.indicators import adx, ema, rma, sma
+
 from .binanceus import BinanceUS
 from .store import Store
 
 PAGE = Path(__file__).with_name("dashboard.html")
-_chart_cache = {"t": 0, "data": None}
+DEFAULT_WATCHLIST = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT",
+                     "AVAXUSDT", "LINKUSDT", "LTCUSDT", "DOTUSDT"]
+ANALYSIS_TFS = ("4h", "8h", "12h", "1d")
+CHART_TFS = ("15m", "1h", "4h", "8h", "12h", "1d", "1w")
+MAX_WATCHLIST = 30
 
 
-# Display-only overlays matching Joe's TradingView "MA+EMA" indicator.
-OVERLAYS = {"EMA 8": (ema, 8), "EMA 13": (ema, 13), "EMA 21": (ema, 21), "EMA 55": (ema, 55),
-            "MA 55": (sma, 55), "MA 100": (sma, 100), "MA 200": (sma, 200)}
+class TTLCache:
+    def __init__(self, maxsize=256):
+        self.data, self.maxsize, self.lock = {}, maxsize, threading.Lock()
+
+    def get(self, key, ttl, fn):
+        now = time.time()
+        with self.lock:
+            hit = self.data.get(key)
+            if hit and now - hit[0] < ttl:
+                return hit[1]
+        value = fn()
+        with self.lock:
+            if len(self.data) >= self.maxsize:
+                self.data.pop(min(self.data, key=lambda k: self.data[k][0]))
+            self.data[key] = (now, value)
+        return value
+
+    def clear(self):
+        with self.lock:
+            self.data.clear()
 
 
-def chart_data(cfg, client, bars=180):
-    """Last `bars` candles with DI lines and MA/EMA overlays, for each timeframe in the ensemble."""
-    if time.time() - _chart_cache["t"] < 300 and _chart_cache["data"]:
-        return _chart_cache["data"]
-    data = {}
-    for tf in cfg.timeframes:
-        candles = client.klines(cfg.symbol, tf)
-        d = strategy.adx(candles, cfg.di_len, cfg.adx_smoothing).tail(bars)
-        fmt = "%Y-%m-%d" if tf == "1d" else "%Y-%m-%d %H:%M"
-        data[tf] = {"times": [t.strftime(fmt) for t in d.index],
-                    "close": [round(x, 2) for x in candles["close"].tail(bars)],
-                    "di_plus": [round(x, 2) for x in d["di_plus"]],
-                    "di_minus": [round(x, 2) for x in d["di_minus"]],
-                    "adx": [round(x, 2) for x in d["adx"]],
-                    # computed on the full history (up to 1000 candles), then trimmed, so long averages are warmed up
-                    "lines": {name: [None if x != x else round(x, 2) for x in fn(candles["close"], n).tail(bars)]
-                              for name, (fn, n) in OVERLAYS.items()}}
-    _chart_cache.update(t=time.time(), data=data)
-    return data
+_cache = TTLCache()
 
 
-def status(cfg, store, client):
-    sleeves = []
-    for name in cfg.timeframes:
-        eq = store.rows("SELECT ts, value, cash, btc, price FROM equity WHERE strategy=? ORDER BY ts", name)
-        sleeves.append({
-            "name": name, "share": 1 / len(cfg.timeframes),
-            "trade": store.current_trade(name),
-            "last": eq[-1] if eq else None, "start_value": eq[0]["value"] if eq else None,
-            "signals": store.rows("SELECT * FROM signals WHERE strategy=? ORDER BY candle_time DESC LIMIT 20", name),
-        })
-    total = store.rows("SELECT ts, value FROM equity WHERE strategy='total' ORDER BY ts")
-    out = {
-        "mode": cfg.mode, "symbol": cfg.symbol, "di_len": cfg.di_len,
-        "kill_switch": cfg.stop_file.exists(),
-        "last_run": store.get("last_run"),
-        "sleeves": sleeves,
-        "equity": total[-1000:],
-        "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
-        "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 50"),
-    }
-    try:
-        out["chart"] = chart_data(cfg, client)
-    except Exception as e:  # dashboard still loads if Binance.US is unreachable
-        out["chart"], out["chart_error"] = None, str(e)
-    return out
+def rsi(close, n=14):
+    d = close.diff()
+    gain, loss = rma(d.clip(lower=0), n), rma(-d.clip(upper=0), n)
+    return 100 - 100 / (1 + gain / loss)
 
+
+def _num(x, nd=2):
+    if x is None:
+        return None
+    x = float(x)
+    return None if x != x else round(x, nd)
+
+
+# -- data ------------------------------------------------------------------
+
+def candles(client, symbol, tf, end=None, limit=1000):
+    def load():
+        df = client.klines(symbol, tf, limit=limit, end_time=end, closed_only=False)
+        return {"symbol": symbol, "tf": tf, "has_more": len(df) == limit,
+                "t": [int(t.timestamp()) for t in df.index],
+                "o": df.open.round(8).tolist(), "h": df.high.round(8).tolist(),
+                "l": df.low.round(8).tolist(), "c": df.close.round(8).tolist(),
+                "v": df.volume.round(4).tolist()}
+    # the latest page changes with every trade; older pages never change
+    return _cache.get(("candles", symbol, tf, end, limit), 15 if end is None else 3600, load)
+
+
+def tradable(client):
+    return _cache.get(("symbols",), 3600, client.tradable_symbols)
+
+
+def analyse(client, symbol, di_len=38, adx_smoothing=9):
+    """The bot's DI read on each timeframe, plus a few context numbers."""
+    def load():
+        out = {"tfs": {}}
+        for tf in ANALYSIS_TFS:
+            k = client.klines(symbol, tf, limit=400)
+            d = adx(k, di_len, adx_smoothing)
+            up = d.di_plus > d.di_minus
+            flips = up.ne(up.shift()).to_numpy().nonzero()[0]
+            since = int(len(up) - 1 - flips[-1]) if len(flips) > 1 else None
+            out["tfs"][tf] = {"up": bool(up.iloc[-1]), "di_plus": _num(d.di_plus.iloc[-1], 1),
+                              "di_minus": _num(d.di_minus.iloc[-1], 1), "adx": _num(d.adx.iloc[-1], 1),
+                              "bars_since_cross": since}
+            if tf == "4h":
+                out["spark"] = [_num(x, 8) for x in k.close.tail(42)]   # last 7 days
+            if tf == "1d":
+                c = k.close
+                out["rsi"] = _num(rsi(c).iloc[-1], 1)
+                out["vs_ma200"] = _num(100 * (c.iloc[-1] / sma(c, 200).iloc[-1] - 1), 1)
+                out["vs_ema21"] = _num(100 * (c.iloc[-1] / ema(c, 21).iloc[-1] - 1), 1)
+        out["score"] = sum(v["up"] for v in out["tfs"].values())
+        return out
+    return _cache.get(("analysis", symbol), 300, load)
+
+
+def watchlist(cfg, store, client, lock):
+    with lock:
+        symbols = store.get("watchlist") or DEFAULT_WATCHLIST
+    tickers = {t["symbol"]: t for t in _cache.get(("tickers", tuple(symbols)), 20,
+                                                  lambda: client.tickers_24h(symbols))}
+    def one(s):
+        t = tickers.get(s, {})
+        row = {"symbol": s, "price": _num(t.get("lastPrice"), 8), "change": _num(t.get("priceChangePercent")),
+               "volume": _num(t.get("quoteVolume"), 0), "high": _num(t.get("highPrice"), 8),
+               "low": _num(t.get("lowPrice"), 8), "bot": s == cfg.symbol}
+        try:
+            row.update(analyse(client, s, cfg.di_len, cfg.adx_smoothing))
+        except Exception as e:  # one bad symbol shouldn't break the list
+            row["error"] = str(e)
+        return row
+
+    with ThreadPoolExecutor(max_workers=6) as pool:  # gentle on Binance.US rate limits
+        rows = list(pool.map(one, symbols))
+    return {"symbols": rows, "timeframes": list(ANALYSIS_TFS)}
+
+
+def status(cfg, store, lock):
+    with lock:
+        sleeves = []
+        for name in cfg.timeframes:
+            eq = store.rows("SELECT ts, value, cash, btc, price FROM equity WHERE strategy=? ORDER BY ts", name)
+            sleeves.append({
+                "name": name, "share": 1 / len(cfg.timeframes),
+                "trade": store.current_trade(name),
+                "last": eq[-1] if eq else None, "start_value": eq[0]["value"] if eq else None,
+                "signals": store.rows("SELECT * FROM signals WHERE strategy=? ORDER BY candle_time DESC LIMIT 20",
+                                      name),
+            })
+        total = store.rows("SELECT ts, value, price FROM equity WHERE strategy='total' ORDER BY ts")
+        return {
+            "mode": cfg.mode, "symbol": cfg.symbol, "di_len": cfg.di_len,
+            "kill_switch": cfg.stop_file.exists(),
+            "last_run": store.get("last_run"),
+            "sleeves": sleeves,
+            "equity": total[-2000:],
+            "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
+            "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),
+            "settings": {"mode": cfg.mode, "symbol": cfg.symbol, "timeframes": list(cfg.timeframes),
+                         "di_len": cfg.di_len, "adx_smoothing": cfg.adx_smoothing,
+                         "join_open_trend": cfg.join_open_trend, "max_order_usd": cfg.max_order_usd,
+                         "maker_timeout_min": cfg.maker_timeout_min, "taker_fallback": cfg.taker_fallback,
+                         "max_slippage": cfg.max_slippage, "paper_start_usd": cfg.paper_start_usd,
+                         "password_set": bool(cfg.dashboard_password)},
+        }
+
+
+# -- HTTP ------------------------------------------------------------------
 
 def make_handler(cfg, store, client):
+    lock = threading.Lock()  # one sqlite connection shared by the server's threads
+
     class Handler(BaseHTTPRequestHandler):
         def _authorized(self):
             if not cfg.dashboard_password:
@@ -88,26 +188,87 @@ def make_handler(cfg, store, client):
                 return hmac.compare_digest(pw, cfg.dashboard_password)
             return False
 
-        def _send(self, code, body, ctype):
+        def _send(self, code, body, ctype="application/json"):
+            if not isinstance(body, bytes):
+                body = json.dumps(body, default=str).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def _deny(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="cryptonomics"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _symbol(self, q):
+            s = (q.get("symbol") or [cfg.symbol])[0].upper()
+            if s != cfg.symbol and s not in {x["symbol"] for x in tradable(client)}:
+                raise ValueError(f"unknown symbol {s!r}")
+            return s
+
         def do_GET(self):
             if not self._authorized():
-                self.send_response(401)
-                self.send_header("WWW-Authenticate", 'Basic realm="cryptonomics"')
-                self.end_headers()
-                return
-            if self.path in ("/", "/index.html"):
-                self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
-            elif self.path == "/api/status":
-                body = json.dumps(status(cfg, store, client), default=str).encode()
-                self._send(200, body, "application/json")
-            else:
-                self._send(404, b"not found", "text/plain")
+                return self._deny()
+            url = urlparse(self.path)
+            q = parse_qs(url.query)
+            try:
+                if url.path in ("/", "/index.html"):
+                    return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+                if url.path == "/api/status":
+                    return self._send(200, status(cfg, store, lock))
+                if url.path == "/api/candles":
+                    tf = (q.get("tf") or ["4h"])[0]
+                    if tf not in CHART_TFS:
+                        raise ValueError(f"unknown timeframe {tf!r}")
+                    end = int(q["end"][0]) if "end" in q else None
+                    limit = max(10, min(1000, int((q.get("limit") or [1000])[0])))
+                    return self._send(200, candles(client, self._symbol(q), tf, end, limit))
+                if url.path == "/api/price":
+                    s = self._symbol(q)
+                    t = _cache.get(("tickers", (s,)), 5, lambda: client.tickers_24h([s]))[0]
+                    return self._send(200, {"symbol": s, "price": float(t["lastPrice"]),
+                                            "change": float(t["priceChangePercent"]), "time": time.time()})
+                if url.path == "/api/watchlist":
+                    return self._send(200, watchlist(cfg, store, client, lock))
+                if url.path == "/api/symbols":
+                    return self._send(200, tradable(client))
+                return self._send(404, {"error": "not found"})
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            except Exception as e:  # e.g. Binance.US unreachable: keep the page usable
+                return self._send(502, {"error": str(e)})
+
+        def do_POST(self):
+            if not self._authorized():
+                return self._deny()
+            if urlparse(self.path).path != "/api/watchlist":
+                return self._send(404, {"error": "not found"})
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                if n > 10_000:
+                    raise ValueError("request too large")
+                symbols = json.loads(self.rfile.read(n) or b"{}").get("symbols")
+                if not isinstance(symbols, list) or not 1 <= len(symbols) <= MAX_WATCHLIST:
+                    raise ValueError(f"send 1-{MAX_WATCHLIST} symbols")
+                known = {x["symbol"] for x in tradable(client)}
+                clean = []
+                for s in symbols:
+                    s = str(s).upper()
+                    if s not in known:
+                        raise ValueError(f"unknown symbol {s!r}")
+                    if s not in clean:
+                        clean.append(s)
+                with lock:
+                    store.set("watchlist", clean)
+                return self._send(200, {"symbols": clean})
+            except (ValueError, AttributeError, json.JSONDecodeError) as e:
+                return self._send(400, {"error": str(e)})
+            except Exception as e:
+                return self._send(502, {"error": str(e)})
 
         def log_message(self, *args):
             pass

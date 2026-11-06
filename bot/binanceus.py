@@ -1,6 +1,7 @@
 """Minimal Binance.US REST client (spot)."""
 import hashlib
 import hmac
+import json
 import time
 from decimal import ROUND_DOWN, Decimal
 from urllib.parse import urlencode
@@ -9,8 +10,8 @@ import pandas as pd
 import requests
 
 BASE = "https://api.binance.us"
-INTERVAL_MS = {"1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000,
-               "8h": 28_800_000, "12h": 43_200_000, "1d": 86_400_000}
+INTERVAL_MS = {"15m": 900_000, "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000,
+               "8h": 28_800_000, "12h": 43_200_000, "1d": 86_400_000, "1w": 604_800_000}
 
 
 class BinanceError(Exception):
@@ -85,14 +86,28 @@ class BinanceUS:
         return self._offset
 
     # -- market data -------------------------------------------------------
-    def klines(self, symbol, interval="1d", limit=1000):
-        """Closed candles only, indexed by open time (UTC)."""
-        rows = self._request("GET", "/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
+    def klines(self, symbol, interval="1d", limit=1000, end_time=None, closed_only=True):
+        """Candles indexed by open time (UTC). By default only closed candles;
+        `end_time` (ms) pages back through history."""
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+        rows = self._request("GET", "/api/v3/klines", params)
         df = pd.DataFrame([r[:6] for r in rows], columns=["time", "open", "high", "low", "close", "volume"])
         df["time"] = pd.to_datetime(df["time"], unit="ms")
         df = df.set_index("time").astype(float)
+        if not closed_only:
+            return df
         now = pd.Timestamp.now("UTC").tz_localize(None)
         return df[df.index + pd.Timedelta(milliseconds=INTERVAL_MS[interval]) <= now]
+
+    def tickers_24h(self, symbols):
+        return self._request("GET", "/api/v3/ticker/24hr", {"symbols": json.dumps(symbols, separators=(",", ":"))})
+
+    def tradable_symbols(self, quotes=("USDT", "USD", "USDC")):
+        info = self._request("GET", "/api/v3/exchangeInfo")
+        return [{"symbol": s["symbol"], "base": s["baseAsset"], "quote": s["quoteAsset"]}
+                for s in info["symbols"] if s["status"] == "TRADING" and s["quoteAsset"] in quotes]
 
     def book(self, symbol):
         b = self._request("GET", "/api/v3/ticker/bookTicker", {"symbol": symbol})

@@ -63,9 +63,18 @@ class FakeClient:
     def filters(self, symbol):
         return Filters("0.01", "0.00001", "0.00001", "1")
 
-    def klines(self, symbol, interval="1d", limit=1000):
+    def klines(self, symbol, interval="1d", limit=1000, end_time=None, closed_only=True):
         c = self.candles[interval] if isinstance(self.candles, dict) else self.candles
+        if end_time is not None:
+            c = c[c.index <= pd.Timestamp(end_time, unit="ms")]
         return c.tail(limit)
+
+    def tickers_24h(self, symbols):
+        return [{"symbol": s, "lastPrice": "100.0", "priceChangePercent": "1.5", "quoteVolume": "1000000",
+                 "highPrice": "101", "lowPrice": "99"} for s in symbols]
+
+    def tradable_symbols(self, quotes=("USDT", "USD", "USDC")):
+        return [{"symbol": b + "USDT", "base": b, "quote": "USDT"} for b in ("BTC", "ETH", "SOL", "SUI")]
 
 
 class Clock:
@@ -400,41 +409,92 @@ class TestEnsemble(unittest.TestCase):
 class TestDashboard(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        web._chart_cache.update(t=0, data=None)
+        web._cache.clear()
 
     def tearDown(self):
-        if hasattr(self, "store"):
-            self.store.db.close()
         self.tmp.cleanup()
 
     def serve(self, password=""):
         cfg = make_cfg(self.tmp.name, dashboard_password=password, timeframes=("4h", "8h", "12h", "1d"))
-        srv = web.make_server(cfg, port=0, client=FakeClient(candles=ensemble_candles()))
+        self.candles = ensemble_candles()
+        srv = web.make_server(cfg, port=0, client=FakeClient(candles=self.candles))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         return f"http://127.0.0.1:{srv.server_address[1]}"
 
+    def get(self, url, expect=200):
+        try:
+            r = urllib.request.urlopen(url)
+            body, code = r.read(), r.status
+        except urllib.error.HTTPError as e:
+            body, code = e.read(), e.code
+        self.assertEqual(code, expect, body[:200])
+        return json.loads(body) if body[:1] in (b"{", b"[") else body
+
+    def post(self, url, payload, expect=200):
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            r = urllib.request.urlopen(req)
+            body, code = r.read(), r.status
+        except urllib.error.HTTPError as e:
+            body, code = e.read(), e.code
+        self.assertEqual(code, expect, body[:200])
+        return json.loads(body)
+
     def test_page_and_status(self):
         url = self.serve()
-        self.assertIn(b"Cryptonomics Bot", urllib.request.urlopen(url + "/").read())
-        s = json.loads(urllib.request.urlopen(url + "/api/status").read())
+        self.assertIn(b"Cryptonomics", self.get(url + "/"))
+        s = self.get(url + "/api/status")
         self.assertEqual([x["name"] for x in s["sleeves"]], ["4h", "8h", "12h", "1d"])
         self.assertEqual(s["mode"], "paper")
-        self.assertEqual({tf: len(c["times"]) for tf, c in s["chart"].items()},
-                         {"4h": 180, "8h": 180, "12h": 180, "1d": 180})
-        lines = s["chart"]["4h"]["lines"]
-        self.assertEqual(list(lines), ["EMA 8", "EMA 13", "EMA 21", "EMA 55", "MA 55", "MA 100", "MA 200"])
-        self.assertTrue(all(len(v) == 180 and None not in v for v in lines.values()))  # warmed up on full history
+        self.assertEqual(s["settings"]["di_len"], 38)
 
-    def test_password(self):
+    def test_candles_page_back_through_history(self):
+        url = self.serve()
+        latest = self.get(url + "/api/candles?symbol=BTCUSDT&tf=4h&limit=100")
+        self.assertEqual(len(latest["t"]), 100)
+        self.assertEqual(set(latest), {"symbol", "tf", "has_more", "t", "o", "h", "l", "c", "v"})
+        end = latest["t"][0] * 1000 - 1
+        older = self.get(url + f"/api/candles?symbol=BTCUSDT&tf=4h&limit=100&end={end}")
+        self.assertLess(older["t"][-1], latest["t"][0])
+        self.get(url + "/api/candles?symbol=NOPE&tf=4h", expect=400)
+        self.get(url + "/api/candles?tf=5h", expect=400)
+
+    def test_watchlist_analysis_and_editing(self):
+        url = self.serve()
+        w = self.get(url + "/api/watchlist")
+        self.assertEqual(w["timeframes"], ["4h", "8h", "12h", "1d"])
+        btc = w["symbols"][0]
+        self.assertTrue(btc["bot"])
+        # the trend read matches the bot's own DI calculation
+        di = adx(self.candles["4h"], 38, 9).iloc[-1]
+        self.assertEqual(btc["tfs"]["4h"]["up"], bool(di.di_plus > di.di_minus))
+        self.assertEqual(btc["score"], sum(v["up"] for v in btc["tfs"].values()))
+        self.assertEqual(len(btc["spark"]), 42)
+        self.assertEqual(self.post(url + "/api/watchlist", {"symbols": ["btcusdt", "SUIUSDT", "SUIUSDT"]}),
+                         {"symbols": ["BTCUSDT", "SUIUSDT"]})
+        self.assertEqual([r["symbol"] for r in self.get(url + "/api/watchlist")["symbols"]], ["BTCUSDT", "SUIUSDT"])
+        self.post(url + "/api/watchlist", {"symbols": ["FAKEUSDT"]}, expect=400)
+        self.post(url + "/api/watchlist", {"symbols": []}, expect=400)
+
+    def test_price(self):
+        url = self.serve()
+        self.assertEqual(self.get(url + "/api/price?symbol=ETHUSDT")["price"], 100.0)
+
+    def test_password_protects_everything(self):
         url = self.serve(password="hunter2")
+        for path in ("/", "/api/status", "/api/candles?tf=4h", "/api/watchlist"):
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen(url + path)
+            self.assertEqual(e.exception.code, 401)
+        req = urllib.request.Request(url + "/api/watchlist", data=b'{"symbols":["ETHUSDT"]}', method="POST")
         with self.assertRaises(urllib.error.HTTPError) as e:
-            urllib.request.urlopen(url + "/api/status")
+            urllib.request.urlopen(req)
         self.assertEqual(e.exception.code, 401)
-        req = urllib.request.Request(url + "/api/status", headers={
-            "Authorization": "Basic " + base64.b64encode(b"joe:hunter2").decode()})
-        self.assertEqual(urllib.request.urlopen(req).status, 200)
+        auth = {"Authorization": "Basic " + base64.b64encode(b"joe:hunter2").decode()}
+        self.assertEqual(urllib.request.urlopen(urllib.request.Request(url + "/api/status", headers=auth)).status, 200)
 
 
 if __name__ == "__main__":
