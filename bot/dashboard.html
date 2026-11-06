@@ -45,6 +45,12 @@
   .tabs button { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line);
                  background: var(--panel); color: var(--text); cursor: pointer; }
   .tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  .lines { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px; }
+  .lines button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line);
+                  background: var(--panel); color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .lines button i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; opacity: .35; }
+  .lines button[aria-pressed="true"] { color: var(--text); border-color: var(--muted); }
+  .lines button[aria-pressed="true"] i { opacity: 1; }
   .chart { position: relative; height: 280px; }
   .chart.small { height: 190px; }
   .table-wrap { overflow-x: auto; }
@@ -75,6 +81,7 @@
   <section class="panel">
     <div class="tabs" id="tabs" role="group" aria-label="Timeframe"></div>
     <h2 id="price-title">BTC close <span class="muted">(▲ buy, ▼ sell)</span></h2>
+    <div class="lines" id="lines" role="group" aria-label="Moving averages"></div>
     <div class="chart"><canvas id="price"></canvas></div>
     <h2 style="margin-top:14px">DI+ / DI- (38) <span class="muted">· dashed: your 11 / 14 / 17 lines</span></h2>
     <div class="chart small"><canvas id="dmi"></canvas></div>
@@ -105,6 +112,24 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&
 const charts = {};
 let state = null, selected = null;
 try { selected = localStorage.getItem("tf"); } catch (e) {}
+// MA/EMA overlays, like the TradingView "MA+EMA" indicator; display only, the bot trades the DI cross.
+const LINES = {"EMA 8": "#e8b400", "EMA 13": "#f08c00", "EMA 21": "#1aa0c8", "EMA 55": "#e64980",
+               "MA 55": "#4263eb", "MA 100": "#e03131", "MA 200": "#2f9e44"};
+let shown = new Set(Object.keys(LINES));
+try { const v = JSON.parse(localStorage.getItem("lines")); if (Array.isArray(v)) shown = new Set(v); } catch (e) {}
+
+function lineButtons() {
+  const box = document.getElementById("lines");
+  if (box.children.length) return;
+  box.innerHTML = Object.entries(LINES).map(([name, col]) =>
+    `<button type="button" data-line="${name}"><i style="background:${col}"></i>${name}</button>`).join("");
+  box.querySelectorAll("button").forEach(b => b.onclick = () => {
+    const n = b.dataset.line;
+    shown.has(n) ? shown.delete(n) : shown.add(n);
+    try { localStorage.setItem("lines", JSON.stringify([...shown])); } catch (e) {}
+    drawTimeframe();
+  });
+}
 
 function table(el, rows, cols) {
   const box = document.getElementById(el);
@@ -151,10 +176,16 @@ function drawTimeframe() {
   const trades = s.trades.filter(t => t.strategy === selected);
   document.getElementById("price-title").innerHTML =
     `BTC ${selected} close, last ${c.times.length} candles <span class="muted">(▲ buy, ▼ sell)</span>`;
+  lineButtons();
+  document.querySelectorAll("#lines button").forEach(b => b.setAttribute("aria-pressed", shown.has(b.dataset.line)));
+  const overlays = Object.entries(LINES).filter(([n]) => shown.has(n) && c.lines && c.lines[n]).map(([n, col]) =>
+    ({label: n, data: c.lines[n], borderColor: col, borderWidth: n.startsWith("MA") ? 2 : 1.2, pointRadius: 0, spanGaps: false}));
   draw("price", {labels: c.times, datasets: [
     {label: "Close", data: c.close, borderColor: css("--price"), borderWidth: 1.5, pointRadius: 0},
+    ...overlays,
     tri("Buy", markers(c.times, c.close, trades, "entry_time"), css("--good")),
-    tri("Sell", markers(c.times, c.close, trades, "exit_time"), css("--bad"), true)]}, baseOptions());
+    tri("Sell", markers(c.times, c.close, trades, "exit_time"), css("--bad"), true)]},
+    baseOptions(i => ["Close", "Buy", "Sell"].includes(i.text)));
   const level = (v, col) => ({label: String(v), data: c.times.map(() => v), borderColor: col, borderDash: [4, 4], borderWidth: 1, pointRadius: 0});
   draw("dmi", {labels: c.times, datasets: [
     {label: "DI+", data: c.di_plus, borderColor: css("--up"), borderWidth: 2, pointRadius: 0},

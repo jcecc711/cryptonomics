@@ -423,6 +423,9 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(s["mode"], "paper")
         self.assertEqual({tf: len(c["times"]) for tf, c in s["chart"].items()},
                          {"4h": 180, "8h": 180, "12h": 180, "1d": 180})
+        lines = s["chart"]["4h"]["lines"]
+        self.assertEqual(list(lines), ["EMA 8", "EMA 13", "EMA 21", "EMA 55", "MA 55", "MA 100", "MA 200"])
+        self.assertTrue(all(len(v) == 180 and None not in v for v in lines.values()))  # warmed up on full history
 
     def test_password(self):
         url = self.serve(password="hunter2")

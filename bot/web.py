@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import strategy
+from bench.indicators import ema, sma
 from .binanceus import BinanceUS
 from .store import Store
 
@@ -20,8 +21,13 @@ PAGE = Path(__file__).with_name("dashboard.html")
 _chart_cache = {"t": 0, "data": None}
 
 
+# Display-only overlays matching Joe's TradingView "MA+EMA" indicator.
+OVERLAYS = {"EMA 8": (ema, 8), "EMA 13": (ema, 13), "EMA 21": (ema, 21), "EMA 55": (ema, 55),
+            "MA 55": (sma, 55), "MA 100": (sma, 100), "MA 200": (sma, 200)}
+
+
 def chart_data(cfg, client, bars=180):
-    """Last `bars` candles with DI lines, for each timeframe in the ensemble."""
+    """Last `bars` candles with DI lines and MA/EMA overlays, for each timeframe in the ensemble."""
     if time.time() - _chart_cache["t"] < 300 and _chart_cache["data"]:
         return _chart_cache["data"]
     data = {}
@@ -33,7 +39,10 @@ def chart_data(cfg, client, bars=180):
                     "close": [round(x, 2) for x in candles["close"].tail(bars)],
                     "di_plus": [round(x, 2) for x in d["di_plus"]],
                     "di_minus": [round(x, 2) for x in d["di_minus"]],
-                    "adx": [round(x, 2) for x in d["adx"]]}
+                    "adx": [round(x, 2) for x in d["adx"]],
+                    # computed on the full history (up to 1000 candles), then trimmed, so long averages are warmed up
+                    "lines": {name: [None if x != x else round(x, 2) for x in fn(candles["close"], n).tail(bars)]
+                              for name, (fn, n) in OVERLAYS.items()}}
     _chart_cache.update(t=time.time(), data=data)
     return data
 
