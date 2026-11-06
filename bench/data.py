@@ -53,7 +53,7 @@ def fetch_coinbase(product="BTC-USD", interval="1d", start="2015-01-01", refresh
     DATA_DIR.mkdir(exist_ok=True)
     path = DATA_DIR / f"cb_{product}_{interval}.csv"
     if path.exists() and not refresh:
-        return pd.read_csv(path, index_col="time", parse_dates=True)
+        return clean(pd.read_csv(path, index_col="time", parse_dates=True))
 
     step = INTERVAL_MS[interval] // 1000
     t = pd.Timestamp(start)
@@ -74,7 +74,21 @@ def fetch_coinbase(product="BTC-USD", interval="1d", start="2015-01-01", refresh
     df = df[["open", "high", "low", "close", "volume"]].astype(float)
     df = df[df.index + pd.Timedelta(seconds=step) <= end]
     df.to_csv(path)
-    return df
+    return clean(df)
+
+
+def clean(df):
+    """Clip bad ticks: an open under half (or over double) the previous close,
+    or a low/high that far outside the candle's open/close range, is a data error, e.g. Coinbase's $0.06 BTC print on
+    2017-04-15 when BTC traded near $1,190."""
+    out = df.copy()
+    prev = df["close"].shift()
+    bad_open = (df["open"] < 0.5 * prev) | (df["open"] > 2 * prev)
+    out["open"] = df["open"].where(~bad_open, prev)
+    body_lo, body_hi = out[["open", "close"]].min(axis=1), out[["open", "close"]].max(axis=1)
+    out["low"] = df["low"].where(df["low"] >= 0.5 * body_lo, body_lo)
+    out["high"] = df["high"].where(df["high"] <= 2 * body_hi, body_hi)
+    return out
 
 
 def resample(df, rule):
