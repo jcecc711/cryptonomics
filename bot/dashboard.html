@@ -175,6 +175,26 @@ td.num, th.num { text-align: right; }
 .grip::after { content: ""; width: 38px; height: 3px; border-radius: 3px; background: var(--line); }
 .grip:hover::after { background: var(--muted); }
 .hint { font-size: 12.5px; color: var(--accent); font-weight: 600; }
+/* editable drawings */
+.draw-layer { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }
+.draw-layer .hit { stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: move; touch-action: none; }
+.draw-layer .locked .hit { cursor: pointer; }
+.draw-layer .handle { pointer-events: all; cursor: grab; touch-action: none; }
+.draw-layer .dlabel { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.draw-layer .sel line:not(.hit) { filter: drop-shadow(0 0 2px rgba(124, 92, 255, .45)); }
+@media (pointer: coarse) { .draw-layer .handle { r: 10; } .draw-layer .hit { stroke-width: 22; } }
+.dtb { position: absolute; z-index: 6; display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 10px; flex-wrap: wrap; max-width: calc(100% - 12px);
+  background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 26px rgba(0,0,0,.18); }
+.dtb[hidden] { display: none; }
+.dtb button { border: 0; background: none; color: var(--text); cursor: pointer; border-radius: 7px; height: 26px; min-width: 26px;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; padding: 0 6px; }
+.dtb button:hover { background: var(--chip); }
+.dtb button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.dtb .sw { width: 18px; height: 18px; min-width: 18px; border-radius: 50%; padding: 0; border: 2px solid transparent; }
+.dtb .sw[aria-pressed="true"] { border-color: var(--text); background-clip: padding-box; }
+.dtb .sep { width: 1px; height: 20px; background: var(--line); margin: 0 2px; }
+.dtb svg { width: 15px; height: 15px; }
+.dtb .del:hover { color: var(--bad); }
 .menu { position: relative; }
 .menu .pop { display: none; position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 250px; max-height: 70vh; overflow: auto;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.18); padding: 8px; }
@@ -256,6 +276,8 @@ td.num, th.num { text-align: right; }
   <symbol id="i-fib" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 4h18M3 9h18M3 13h18M3 20h18"/></symbol>
   <symbol id="i-ruler" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-unlock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-2"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/></symbol>
   <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></symbol>
   <symbol id="i-camera" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7h4l2-3h6l2 3h4v13H3z"/><circle cx="12" cy="13" r="4"/></symbol>
@@ -350,7 +372,7 @@ td.num, th.num { text-align: right; }
           <button data-tool="measure" title="Measure"><svg width="16" height="16"><use href="#i-ruler"/></svg></button>
         </div>
         <button class="iconbtn" id="d-undo" title="Undo last drawing"><svg><use href="#i-undo"/></svg></button>
-        <button class="iconbtn" id="d-clear" title="Clear drawings"><svg><use href="#i-trash"/></svg></button>
+        <button class="iconbtn" id="d-clear" title="Clear unlocked drawings"><svg><use href="#i-trash"/></svg></button>
         <span class="sep hide-mob"></span>
         <div class="seg" id="c-range"><button data-r="86400">1D</button><button data-r="604800">1W</button><button data-r="2592000">1M</button><button data-r="7776000">3M</button><button data-r="31536000">1Y</button><button data-r="all">All</button></div>
         <button class="iconbtn" id="c-shot" title="Save chart image"><svg><use href="#i-camera"/></svg></button>
@@ -361,7 +383,7 @@ td.num, th.num { text-align: right; }
         <div class="legend" id="legend"></div>
         <div id="panes"></div>
       </div>
-      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Buy ▲ / sell ▼ markers show the bot's trades on BTC.</p>
+      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Buy ▲ / sell ▼ markers show the bot's trades on BTC.</p>
     </section>
 
     <!-- WATCHLIST -->
@@ -774,7 +796,7 @@ const Charts = (() => {
   let inds = new Set(store.get("inds", IND_DEFAULT));
   let st = {sym: store.get("csym", "BTCUSDT"), tf: store.get("ctf", "4h"), type: store.get("ctype", "candle"), bars: [], hasMore: true, loading: false, ready: false};
   let panes = [];        // {id, chart, el, series:{}, main?}
-  let main = null, syncing = false, tool = "cursor", pending = null, drawObjs = [], tmpSeries = null, liveTimer = null, symbolsLoaded = false;
+  let main = null, syncing = false, tool = "cursor", pending = null, tmpSeries = null, liveTimer = null, symbolsLoaded = false;
   let computed = null;   // last indicator values, reused by the legend on every mouse move
   const heights = store.get("heights", {});
 
@@ -850,11 +872,14 @@ const Charts = (() => {
     let down = null;
     main.el.addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY}; });
     main.el.addEventListener("pointerup", e => {
-      if (!down || tool === "cursor" || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return;
-      const r = main.el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-      onClick({time: main.chart.timeScale().coordinateToTime(x), point: {x, y}});
+      if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) { down = null; return; }
       down = null;
+      if (e.target.closest && e.target.closest(".dtb, .draw-layer [data-id]")) return;
+      const r = main.el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      if (tool === "cursor") { if (selected) { selected = null; render(); } return; }   // click on empty chart: deselect
+      onClick({time: T(x), point: {x, y}});    // T() also works to the right of the last candle
     });
+    ensureLayer();
   }
 
   function gripHandler(grip, el, id) {
@@ -972,49 +997,211 @@ const Charts = (() => {
   }
 
   /* drawings: saved per coin + timeframe */
+  /* ---------- drawings: an SVG layer over the price chart; select, drag, resize, style, lock, delete ---------- */
+  const DCOLORS = ["#7c5cff", "#1aa0c8", "#12a150", "#f08c00", "#e5484d", "#e64980", "#9098aa"];
+  const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
   const dkey = () => st.sym + "|" + st.tf;
   const allDrawings = () => store.get("drawings", {});
-  function saveDrawing(d) { const all = allDrawings(); (all[dkey()] = all[dkey()] || []).push(d); store.set("drawings", all); drawings(); }
-  function drawings() {
-    drawObjs.forEach(o => o.kind === "line" ? main.series.price.removePriceLine(o.obj) : main.chart.removeSeries(o.obj));
-    drawObjs = [];
-    (allDrawings()[dkey()] || []).forEach(d => {
-      if (d.type === "hline") drawObjs.push({kind: "line", obj: main.series.price.createPriceLine({price: d.p, color: "#7c5cff", lineWidth: 1, lineStyle: LW.LineStyle.Solid, axisLabelVisible: true, title: ""})});
-      if (d.type === "fib") [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1].forEach(lv => drawObjs.push({kind: "line", obj: main.series.price.createPriceLine({
-        price: d.b.p - (d.b.p - d.a.p) * lv, color: lv === 0.618 ? "#f08c00" : "#9a7bff", lineWidth: 1, lineStyle: lv === 0 || lv === 1 ? LW.LineStyle.Solid : LW.LineStyle.Dashed,
-        axisLabelVisible: true, title: "Fib " + lv})}));
-      if (d.type === "trend" && d.a.t !== d.b.t) { const s = main.chart.addLineSeries({color: "#7c5cff", lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false});
-        s.setData([d.a, d.b].sort((x, y) => x.t - y.t).map(x => ({time: x.t, value: x.p}))); drawObjs.push({kind: "series", obj: s}); }
+  let selected = null, dragging = null, svg = null, dtb = null, dtbFor = null, loopOn = false;
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  function upgrade(x) {   // drawings saved by the earlier, fixed tool
+    if (x.pts) return x;
+    const base = {id: uid(), color: DCOLORS[0], width: 2, style: "solid", locked: false, extend: "none"};
+    return x.type === "hline" ? {...base, type: "hline", width: 1, pts: [{t: null, p: x.p}]} : {...base, type: x.type, width: x.type === "fib" ? 1 : 2, pts: [x.a, x.b]};
+  }
+  function list() {
+    const raw = allDrawings()[dkey()] || [], up = raw.map(upgrade);
+    if (raw.some(x => !x.pts)) saveList(up);
+    return up;
+  }
+  function saveList(arr) { const all = allDrawings(); if (arr.length) all[dkey()] = arr; else delete all[dkey()]; store.set("drawings", all); }
+  function newDrawing(type, pts) {
+    const dr = {id: uid(), type, pts, color: DCOLORS[0], width: type === "trend" ? 2 : 1, style: "solid", locked: false, extend: "none"};
+    saveList(list().concat(dr)); selected = dr.id; render();
+  }
+  function edit(id, fn) { const arr = list(), x = arr.find(q => q.id === id); if (!x) return; fn(x); saveList(arr); render(); }
+  function remove(id) { saveList(list().filter(q => q.id !== id)); if (selected === id) selected = null; render(); }
+
+  // time <-> chart position, including beyond the first and last candle (for projections)
+  const tfSec = () => TF_SEC[st.tf];
+  function tToL(t) {
+    const b = st.bars, n = b.length; if (!n) return null;
+    if (t <= b[0].t) return (t - b[0].t) / tfSec();
+    if (t >= b[n - 1].t) return n - 1 + (t - b[n - 1].t) / tfSec();
+    let lo = 0, hi = n - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (b[m].t <= t) lo = m; else hi = m; }
+    return lo + (t - b[lo].t) / (b[hi].t - b[lo].t);
+  }
+  function lToT(l) {
+    const b = st.bars, n = b.length, r = Math.round(l);
+    if (r <= 0) return b[0].t + r * tfSec();
+    if (r >= n - 1) return b[n - 1].t + (r - (n - 1)) * tfSec();
+    return b[r].t;
+  }
+  const X = t => { const l = tToL(t); return l == null ? null : main.chart.timeScale().logicalToCoordinate(l); };
+  const Y = p => main.series.price.priceToCoordinate(p);
+  const P = y => main.series.price.coordinateToPrice(y);
+  function T(x) { const l = main.chart.timeScale().coordinateToLogical(x); return l == null || !st.bars.length ? null : lToT(l); }
+  const dash = s => s === "dashed" ? "8 6" : s === "dotted" ? "2 4" : "";
+  const f1 = v => Math.round(v * 10) / 10;
+
+  function ensureLayer() {
+    svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "draw-layer");
+    main.el.appendChild(svg);
+    dtb = document.createElement("div"); dtb.className = "dtb"; dtb.hidden = true; main.el.appendChild(dtb);
+    dtbFor = null;
+    svg.addEventListener("pointerdown", startDrag);
+    dtb.addEventListener("pointerdown", e => e.stopPropagation());
+    dtb.addEventListener("click", toolbarClick);
+  }
+
+  // width of the plot area (the time scale can report 0 before it has laid out)
+  const plotWidth = () => main.chart.timeScale().width() || Math.max(0, main.el.clientWidth - main.chart.priceScale("right").width());
+  function render() {
+    if (!main || !svg || !st.bars.length) return;
+    const W = plotWidth(), items = list();
+    let html = "";
+    for (const x of items) {
+      const sel = x.id === selected, col = esc(x.color), w = x.width, da = dash(x.style);
+      const ln = (x1, y1, x2, y2, c = col, ww = w, dd = da) => `<line x1="${f1(x1)}" y1="${f1(y1)}" x2="${f1(x2)}" y2="${f1(y2)}" stroke="${c}" stroke-width="${ww}" stroke-dasharray="${dd}" stroke-linecap="round"/>`;
+      const hit = (x1, y1, x2, y2) => `<line class="hit" data-id="${x.id}" data-part="body" x1="${f1(x1)}" y1="${f1(y1)}" x2="${f1(x2)}" y2="${f1(y2)}"/>`;
+      const handle = (hx, hy, i) => `<circle class="handle" data-id="${x.id}" data-part="${i}" cx="${f1(hx)}" cy="${f1(hy)}" r="6" fill="var(--panel)" stroke="${col}" stroke-width="2"/>`;
+      let g = "";
+      if (x.type === "hline") {
+        const y = Y(x.pts[0].p); if (y == null) continue;
+        g = ln(0, y, W, y) + hit(0, y, W, y) + `<text class="dlabel" x="${W - 6}" y="${f1(y - 5)}" text-anchor="end" fill="${col}">${price(x.pts[0].p)}</text>`;
+        if (sel && !x.locked) g += handle(W * 0.5, y, 0);
+      } else if (x.type === "trend") {
+        const a = {x: X(x.pts[0].t), y: Y(x.pts[0].p)}, b = {x: X(x.pts[1].t), y: Y(x.pts[1].p)};
+        if ([a.x, a.y, b.x, b.y].some(v => v == null)) continue;
+        let [l, r] = a.x <= b.x ? [a, b] : [b, a];
+        let x1 = l.x, y1 = l.y, x2 = r.x, y2 = r.y; const k = x2 !== x1 ? (y2 - y1) / (x2 - x1) : 0;
+        if (x.extend === "right" || x.extend === "both") { y2 += k * (W - x2); x2 = W; }
+        if (x.extend === "both") { y1 -= k * x1; x1 = 0; }
+        g = ln(x1, y1, x2, y2) + hit(x1, y1, x2, y2);
+        if (sel && !x.locked) g += handle(a.x, a.y, 0) + handle(b.x, b.y, 1);
+      } else if (x.type === "fib") {
+        const [a, b] = x.pts, xa = X(a.t), xb = X(b.t); if (xa == null || xb == null) continue;
+        const x1 = Math.min(xa, xb), x2 = x.extend === "none" ? Math.max(xa, xb) : W;
+        for (const lv of FIB) {
+          const p = b.p - (b.p - a.p) * lv, y = Y(p); if (y == null) continue;
+          const c = lv === 0.618 ? "#f08c00" : col, edge = lv === 0 || lv === 1;
+          g += ln(x1, y, x2, y, c, edge ? w + 0.5 : w, edge ? "" : (da || "5 4")) + hit(x1, y, x2, y)
+            + `<text class="dlabel" x="${f1(x1 + 4)}" y="${f1(y - 4)}" fill="${c}">${lv} · ${price(p)}</text>`;
+        }
+        if (sel) { const ya = Y(a.p), yb = Y(b.p);
+          g += ln(xa, ya, xb, yb, col, 1, "3 3");
+          if (!x.locked) g += handle(xa, ya, 0) + handle(xb, yb, 1); }
+      }
+      html += `<g class="${sel ? "sel" : ""}${x.locked ? " locked" : ""}">${g}</g>`;
+    }
+    if (svg._html !== html) { svg.innerHTML = html; svg._html = html; }
+    placeToolbar(items, W);
+  }
+  function drawings() { render(); }
+
+  function placeToolbar(items, W) {
+    const x = items.find(q => q.id === selected);
+    if (!x || tool !== "cursor") { dtb.hidden = true; dtbFor = null; return; }
+    const sig = [x.id, x.color, x.width, x.style, x.locked, x.extend].join("|");
+    if (dtbFor !== sig) {
+      dtbFor = sig;
+      const b = (act, label, title, pressed, extra = "") => `<button data-act="${act}" title="${title}" aria-pressed="${!!pressed}" ${extra}>${label}</button>`;
+      dtb.innerHTML = DCOLORS.map(c => `<button class="sw" data-act="color" data-v="${c}" title="Color" aria-pressed="${c === x.color}" style="background:${c}"></button>`).join("") +
+        '<span class="sep"></span>' + [1, 2, 3].map(v => b("width", v + "px", "Thickness", v === x.width, `data-v="${v}"`)).join("") +
+        '<span class="sep"></span>' + [["solid", "—"], ["dashed", "– –"], ["dotted", "···"]].map(([v, l]) => b("style", l, v[0].toUpperCase() + v.slice(1), v === x.style, `data-v="${v}"`)).join("") +
+        (x.type === "hline" ? "" : '<span class="sep"></span>' + b("extend", {none: "→|", right: "→∞", both: "∞↔∞"}[x.extend] || "→|",
+          x.type === "fib" ? "Extend levels to the right" : "Extend: none / right / both ways", x.extend !== "none")) +
+        '<span class="sep"></span>' + b("lock", `<svg><use href="#i-${x.locked ? "lock" : "unlock"}"/></svg>`, x.locked ? "Unlock" : "Lock", x.locked) +
+        b("delete", '<svg><use href="#i-trash"/></svg>', "Delete (Del key)", false, 'class="del"');
+    }
+    // anchor above the drawing's first point
+    let ax = W / 2, ay = Y(x.pts[0].p);
+    if (x.type !== "hline") { const xs = x.pts.map(q => X(q.t)).filter(v => v != null); if (xs.length) ax = xs.reduce((s, v) => s + v, 0) / xs.length;
+      const ys = x.pts.map(q => Y(q.p)).filter(v => v != null); if (ys.length) ay = Math.min(...ys); }
+    if (ay == null) { dtb.hidden = true; return; }
+    dtb.hidden = false;
+    const bw = dtb.offsetWidth, bh = dtb.offsetHeight, H = main.el.clientHeight;
+    dtb.style.left = Math.max(6, Math.min(W - bw - 6, ax - bw / 2)) + "px";
+    dtb.style.top = (ay - bh - 14 >= 4 ? ay - bh - 14 : Math.min(H - bh - 4, ay + 18)) + "px";
+  }
+  function toolbarClick(e) {
+    const btn = e.target.closest("button[data-act]"); if (!btn || !selected) return;
+    const act = btn.dataset.act, v = btn.dataset.v;
+    if (act === "delete") return remove(selected);
+    edit(selected, x => {
+      if (act === "color") x.color = v;
+      if (act === "width") x.width = +v;
+      if (act === "style") x.style = v;
+      if (act === "lock") x.locked = !x.locked;
+      if (act === "extend") x.extend = x.type === "fib" ? (x.extend === "none" ? "right" : "none")
+        : {none: "right", right: "both", both: "none"}[x.extend] || "right";
     });
   }
+
+  function startDrag(e) {
+    const el = e.target.closest(".draw-layer [data-id]"); if (!el) return;
+    e.stopPropagation(); e.preventDefault();
+    if (tool !== "cursor") setTool("cursor");
+    selected = el.dataset.id; dtbFor = null; render();
+    const x = list().find(q => q.id === selected);
+    if (!x || x.locked) return;
+    dragging = {id: x.id, part: el.dataset.part, x0: e.clientX, y0: e.clientY, orig: x.pts.map(q => ({...q}))};
+    window.addEventListener("pointermove", onDrag);
+    window.addEventListener("pointerup", endDrag, {once: true});
+  }
+  function onDrag(e) {
+    if (!dragging) return;
+    const dx = e.clientX - dragging.x0, dy = e.clientY - dragging.y0;
+    edit(dragging.id, x => {
+      const move = (q, o) => {
+        if (o.t != null) { const nx = X(o.t); const nt = nx == null ? null : T(nx + dx); if (nt != null) q.t = nt; }
+        const oy = Y(o.p); const np = oy == null ? null : P(oy + dy); if (np != null) q.p = np;
+      };
+      if (dragging.part === "body") x.pts.forEach((q, i) => move(q, dragging.orig[i]));
+      else move(x.pts[+dragging.part], dragging.orig[+dragging.part]);
+    });
+  }
+  function endDrag() { dragging = null; window.removeEventListener("pointermove", onDrag); }
+  document.addEventListener("keydown", e => {
+    if (view !== "charts" || !selected || /input|select|textarea/i.test(document.activeElement.tagName)) return;
+    if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); remove(selected); }
+  });
+  function loop() { if (view === "charts") render(); requestAnimationFrame(loop); }
+
   function clearTmp() { if (tmpSeries) { main.chart.removeSeries(tmpSeries); tmpSeries = null; } }
   function onClick(param) {
     if (tool === "cursor" || !param.point || param.time == null) return;
     const p = main.series.price.coordinateToPrice(param.point.y); if (p == null) return;
     const pt = {t: param.time, p};
-    if (tool === "hline") { saveDrawing({type: "hline", p}); setTool("cursor"); return; }
+    if (tool === "hline") { newDrawing("hline", [{t: null, p}]); setTool("cursor"); return; }
     if (!pending) { pending = pt; hint(); return; }
     const a = pending; pending = null;
-    if (tool === "trend") saveDrawing({type: "trend", a, b: pt});
-    if (tool === "fib") saveDrawing({type: "fib", a, b: pt});
+    if (tool === "trend" && a.t !== pt.t) newDrawing("trend", [a, pt]);
+    if (tool === "fib") newDrawing("fib", [a, pt]);
     if (tool === "measure") {
-      clearTmp(); const ia = st.bars.findIndex(b => b.t === a.t), ib = st.bars.findIndex(b => b.t === pt.t);
-      if (a.t !== pt.t) { tmpSeries = main.chart.addLineSeries({color: "#f08c00", lineWidth: 2, lineStyle: LW.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false});
+      clearTmp(); const ia = tToL(a.t), ib = tToL(pt.t);
+      if (a.t !== pt.t && a.t <= st.bars.at(-1).t && pt.t <= st.bars.at(-1).t) {
+        tmpSeries = main.chart.addLineSeries({color: "#f08c00", lineWidth: 2, lineStyle: LW.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false});
         tmpSeries.setData([a, pt].sort((x, y) => x.t - y.t).map(x => ({time: x.t, value: x.p}))); }
       const ch = pt.p / a.p - 1;
-      toast(`Measure: <b class="${cls(ch)}">${pct(ch, 2)}</b> (${price(pt.p - a.p)}) over ${Math.abs(ib - ia)} candles`, ch >= 0 ? "good" : "bad");
+      toast(`Measure: <b class="${cls(ch)}">${pct(ch, 2)}</b> (${price(pt.p - a.p)}) over ${Math.round(Math.abs(ib - ia))} candles`, ch >= 0 ? "good" : "bad");
     }
     setTool("cursor");
   }
   function hint() {
-    const h = {hline: "Click the chart to place a horizontal line", trend: pending ? "Click the second point" : "Click the first point of the trend line",
+    const h = {hline: "Click the chart to place a horizontal line", trend: pending ? "Click the second point (it can be in the future)" : "Click the first point of the trend line",
       fib: pending ? "Click the end of the swing" : "Click the start of the swing (e.g. the low)", measure: pending ? "Click the second point" : "Click the first point to measure from"}[tool];
-    $("#c-hint").textContent = st.loading && st.bars.length ? "Loading older candles…" : h || "";
+    $("#c-hint").textContent = st.loading && st.bars.length ? "Loading older candles…" : h || (selected ? "Drag the line or its end points; Del removes it" : "");
   }
-  function setTool(t) { tool = t; pending = null; $$("#c-tools button").forEach(b => b.setAttribute("aria-pressed", b.dataset.tool === t)); hint(); }
+  function setTool(t) { tool = t; pending = null; if (t !== "cursor") selected = null; $$("#c-tools button").forEach(b => b.setAttribute("aria-pressed", b.dataset.tool === t)); hint(); }
   $$("#c-tools button").forEach(b => b.onclick = () => setTool(b.dataset.tool));
-  $("#d-undo").onclick = () => { const all = allDrawings(); (all[dkey()] || []).pop(); store.set("drawings", all); clearTmp(); drawings(); };
-  $("#d-clear").onclick = () => { const all = allDrawings(); delete all[dkey()]; store.set("drawings", all); clearTmp(); drawings(); toast("Drawings cleared for " + esc(st.sym) + " " + st.tf + "."); };
+  $("#d-undo").onclick = () => { const arr = list(); arr.pop(); saveList(arr); selected = null; clearTmp(); render(); };
+  $("#d-clear").onclick = () => {
+    const n = list().filter(x => !x.locked).length; if (!n) return toast("No unlocked drawings to clear.");
+    saveList(list().filter(x => x.locked)); selected = null; clearTmp(); render();
+    toast(`Cleared ${n} drawing${n > 1 ? "s" : ""} on ${esc(st.sym)} ${st.tf}. Locked ones were kept.`);
+  };
 
   /* toolbar */
   function renderToolbar() {
@@ -1048,11 +1235,11 @@ const Charts = (() => {
   $("#c-shot").onclick = () => { const c = main.chart.takeScreenshot();
     const a = Object.assign(document.createElement("a"), {href: c.toDataURL("image/png"), download: `${st.sym}-${st.tf}.png`}); a.click(); };
   $("#c-full").onclick = () => { $("#chartbox").classList.toggle("full"); document.body.style.overflow = $("#chartbox").classList.contains("full") ? "hidden" : ""; };
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#chartbox").classList.remove("full"); document.body.style.overflow = ""; setTool("cursor"); } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") { $("#chartbox").classList.remove("full"); document.body.style.overflow = ""; setTool("cursor"); selected = null; render(); } });
 
   async function rebuild(keepData) {
     const range = keepData && main ? main.chart.timeScale().getVisibleLogicalRange() : null;
-    drawObjs = []; tmpSeries = null; pending = null;
+    tmpSeries = null; pending = null; selected = null;
     buildPanes();
     if (keepData && st.bars.length) { setAll(); if (range) main.chart.timeScale().setVisibleLogicalRange(range); }
     else await load();
@@ -1062,7 +1249,8 @@ const Charts = (() => {
       if (!LW) { $("#legend").innerHTML = '<span class="bad">The chart library could not load (no internet?).</span>'; return; }
       if (!st.ready) { st.ready = true; renderToolbar(); renderIndMenu(); setTool("cursor");
         $("#c-sym").innerHTML = `<option>${esc(st.sym)}</option>`; symbols();   // fill the coin list without holding up the chart
-        await rebuild(); liveTimer = setInterval(liveUpdate, 15000); }
+        await rebuild(); liveTimer = setInterval(liveUpdate, 15000);
+        if (!loopOn) { loopOn = true; requestAnimationFrame(loop); } }
       else if (!symbolsLoaded) symbols();
     },
     open(sym) { st.sym = sym; store.set("csym", sym); if (st.ready) { symbols(); rebuild(); } show("charts"); },
