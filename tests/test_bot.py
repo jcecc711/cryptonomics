@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from decimal import Decimal
@@ -19,7 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))  # bench uses flat imports
 from bench.exits import signals as bench_signals
 from bench.indicators import adx, ema
-from bot import run, strategy, web
+from bot import run, stocks, strategy, web
 from bot.binanceus import BinanceError, Filters, sign
 from bot.broker import PaperBroker
 from bot.config import Config
@@ -567,10 +568,100 @@ class TestEnsemble(unittest.TestCase):
             del os.environ["BOT_TIMEFRAMES"], os.environ["BOT_DATA_DIR"]
 
 
+class FakeYahoo:
+    """Answers like Yahoo's chart endpoint for one ticker: regular-session 1h, 15m, 1d, 1wk
+    candles on weekdays, with the extra off-grid "latest trade" point Yahoo appends."""
+    def __init__(self, ticker="AAPL", days=900, now=pd.Timestamp("2026-11-06 19:00", tz="UTC")):
+        self.ticker, self.now = ticker, now
+        days_ny = pd.bdate_range(end=now.tz_convert("America/New_York").date(), periods=days)
+        rng = np.random.default_rng(3)
+        rows = []
+        for d in days_ny:
+            for h in range(7):
+                ts = pd.Timestamp(d).tz_localize("America/New_York") + pd.Timedelta(hours=9, minutes=30 + 60 * h)
+                if ts <= now:
+                    rows.append(ts.tz_convert("UTC"))
+        px = 100 * np.exp(np.cumsum(rng.normal(0, 0.004, len(rows))))
+        self.h1 = pd.DataFrame({"open": px * (1 + rng.normal(0, 0.001, len(px))), "close": px,
+                                "volume": rng.integers(1000, 5000, len(px)).astype(float)}, index=pd.DatetimeIndex(rows))
+        self.h1["high"] = self.h1[["open", "close"]].max(axis=1) * 1.002
+        self.h1["low"] = self.h1[["open", "close"]].min(axis=1) * 0.998
+
+    def frame(self, interval):
+        if interval in ("60m", "15m"):
+            return self.h1
+        ny = self.h1.index.tz_convert("America/New_York")
+        key = ny.normalize() if interval == "1d" else (ny.normalize() - pd.to_timedelta(ny.weekday, unit="D"))
+        g = self.h1.groupby(key)
+        df = g.agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        if interval == "1d":
+            df.index = df.index + pd.Timedelta(hours=9, minutes=30)
+        return df.tz_convert("UTC") if df.index.tz else df
+
+    def __call__(self, ticker, params):
+        if ticker != self.ticker:
+            raise stocks.StockError(f"unknown stock {ticker!r}")
+        df = self.frame(params["interval"])
+        df = df[(df.index >= pd.Timestamp(params["period1"], unit="s", tz="UTC")) &
+                (df.index <= pd.Timestamp(params["period2"], unit="s", tz="UTC"))]
+        ts = [int(x.timestamp()) for x in df.index]
+        q = {k: df[k].tolist() for k in ("open", "high", "low", "close", "volume")}
+        if ts:   # Yahoo's trailing point: the latest trade, off the candle grid
+            ts.append(int(self.now.timestamp()) + 7)
+            for k in ("open", "high", "low", "close"):
+                q[k].append(q["close"][-1])
+            q["volume"].append(0)
+        return {"meta": {"longName": "Apple Inc.", "regularMarketPrice": q["close"][-1] if ts else None},
+                "timestamp": ts, "indicators": {"quote": [q]}}
+
+
+class TestStocks(unittest.TestCase):
+    def setUp(self):
+        self.y = FakeYahoo()
+        patcher = unittest.mock.patch.object(stocks, "_get", self.y)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.now = self.y.now.timestamp()
+
+    def test_4h_candles_stay_inside_each_session(self):
+        df, more = stocks.candles("AAPL", "4h", limit=40, now=self.now)
+        ny = df.index.tz_convert("America/New_York")
+        self.assertEqual(sorted(set(ny.strftime("%H:%M"))), ["09:30", "13:30"])
+        day = self.y.h1[self.y.h1.index.tz_convert("America/New_York").date == ny[-2].date()]
+        first = day.iloc[:4]
+        self.assertAlmostEqual(df.loc[df.index[-2], "high"], first.high.max())
+        self.assertAlmostEqual(df.loc[df.index[-2], "close"], first.close.iloc[-1])
+        self.assertTrue(more)
+
+    def test_live_point_is_folded_and_closed_only_drops_the_forming_candle(self):
+        h, _ = stocks.candles("AAPL", "1h", limit=50, now=self.now)
+        self.assertEqual(h.index[-1], self.y.h1.index[-1])                 # no extra off-grid candle
+        w, _ = stocks.candles("AAPL", "1w", limit=10, now=self.now)
+        self.assertEqual(w.index[-1].weekday(), 0)                          # labelled by Monday's date
+        wc, _ = stocks.candles("AAPL", "1w", limit=10, now=self.now, closed_only=True)
+        self.assertEqual(wc.index[-1], w.index[-2])                        # this week is still trading
+        d, _ = stocks.candles("AAPL", "1d", limit=10, now=self.now, closed_only=True)
+        self.assertLess(d.index[-1].date(), pd.Timestamp(self.now, unit="s").date())
+
+    def test_paging_back(self):
+        latest, _ = stocks.candles("AAPL", "1d", limit=100, now=self.now)
+        older, more = stocks.candles("AAPL", "1d", end=latest.index[0].timestamp() - 1, limit=100, now=self.now)
+        self.assertEqual(len(older), 100)
+        self.assertLess(older.index[-1], latest.index[0])
+
+    def test_unknown_ticker(self):
+        with self.assertRaises(stocks.StockError):
+            stocks.quote("NOPE")
+        self.assertFalse(stocks.is_ticker("BAD TICKER"))
+
+
 class TestDashboard(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         web._cache.clear()
+        patcher = unittest.mock.patch.object(stocks, "_get", FakeYahoo(now=pd.Timestamp.now(tz="UTC").floor("h")))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -630,11 +721,12 @@ class TestDashboard(unittest.TestCase):
         url = self.serve()
         latest = self.get(url + "/api/candles?symbol=BTCUSDT&tf=4h&limit=100")
         self.assertEqual(len(latest["t"]), 100)
-        self.assertEqual(set(latest), {"symbol", "tf", "has_more", "t", "o", "h", "l", "c", "v"})
+        self.assertEqual(set(latest), {"symbol", "tf", "has_more", "t", "o", "h", "l", "c", "v", "kind"})
         end = latest["t"][0] * 1000 - 1
         older = self.get(url + f"/api/candles?symbol=BTCUSDT&tf=4h&limit=100&end={end}")
         self.assertLess(older["t"][-1], latest["t"][0])
-        self.get(url + "/api/candles?symbol=NOPE&tf=4h", expect=400)
+        self.get(url + "/api/candles?symbol=NOPE&tf=4h", expect=400)            # neither a coin nor a stock
+        self.get(url + "/api/candles?symbol=BAD!&tf=4h", expect=400)
         self.get(url + "/api/candles?tf=5h", expect=400)
 
     def test_3h_candles_built_from_1h(self):
@@ -663,6 +755,17 @@ class TestDashboard(unittest.TestCase):
                          {"symbols": ["BTCUSDT", "SUIUSDT"]})
         self.assertEqual([r["symbol"] for r in self.get(url + "/api/watchlist")["symbols"]], ["BTCUSDT", "SUIUSDT"])
         self.post(url + "/api/watchlist", {"symbols": ["FAKEUSDT"]}, expect=400)
+        # US stocks: anything that isn't a Binance.US pair is checked as a stock ticker
+        self.assertEqual(self.post(url + "/api/watchlist", {"symbols": ["BTCUSDT", "aapl", "$AAPL"]}),
+                         {"symbols": ["BTCUSDT", "AAPL"]})
+        aapl = self.get(url + "/api/watchlist")["symbols"][1]
+        self.assertEqual((aapl["kind"], aapl["name"]), ("stock", "Apple Inc."))
+        self.assertEqual(list(aapl["tfs"]), ["1h", "4h", "1d", "1w"])
+        self.assertIsNotNone(aapl["price"])
+        self.post(url + "/api/watchlist", {"symbols": ["MSFT"]}, expect=400)   # Yahoo doesn't know it here
+        c = self.get(url + "/api/candles?symbol=AAPL&tf=4h&limit=30")
+        self.assertEqual((c["kind"], len(c["t"])), ("stock", 30))
+        self.assertEqual(self.get(url + "/api/price?symbol=AAPL")["symbol"], "AAPL")
         self.post(url + "/api/watchlist", {"symbols": []}, expect=400)
 
     def test_price(self):

@@ -56,8 +56,16 @@ markets. It gives up growth in strong bull runs.
   candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and
   scroll back through history, resizable and full-screen panes, your MA/EMA set,
   volume, Bollinger, DI/ADX, RSI, MACD, Stochastic, ATR, horizontal / trend /
-  Fibonacci / measure tools), a watchlist of other Binance.US coins scored with
-  the bot's DI rule, trades with CSV export, activity, and trade alerts.
+  Fibonacci / measure tools; click a drawing to move it, drag its end points,
+  change color / thickness / style, extend it, lock it or delete it), a watchlist
+  of Binance.US coins and US stocks scored with the bot's DI rule, trades with
+  CSV export, activity, and trade alerts.
+- **US stocks** (watchlist and charts only; the bot trades BTC): type a ticker
+  such as `AAPL` in the watchlist (`$COIN` when a ticker is also a coin). Prices
+  come from Yahoo Finance's public chart data, no key needed, regular hours only
+  and a few minutes delayed. The DI read uses 1h / 4h / 1d / 1w; 3h-12h stock
+  candles are built within each trading day (4h = 9:30-13:30 and 13:30-16:00 New
+  York), and intraday history goes back about 60 days (15m) or 2 years (1h).
 - Everything is recorded in `data/bot_paper.sqlite` or `data/bot_live.sqlite` (tagged by sleeve)
   and shown on the dashboard. Paper and live never share balances or trades.
 

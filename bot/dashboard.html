@@ -208,6 +208,8 @@ td.num, th.num { text-align: right; }
 .coin .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 11px; flex: none; }
 .coin small { color: var(--muted); }
 .tag { font-size: 10.5px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: var(--g1); color: #fff; }
+.tag.stock { background: var(--chip); color: var(--muted); }
+.coin .av.sq { border-radius: 8px; }
 .tfdots { display: flex; gap: 4px; }
 .tfdots span { font-size: 11px; font-weight: 700; padding: 3px 6px; border-radius: 6px; }
 .tfdots .u { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
@@ -392,14 +394,14 @@ td.num, th.num { text-align: right; }
         <div class="phead">
           <h2><span class="ic" style="background:var(--g2)"><svg><use href="#i-star"/></svg></span>Watchlist</h2>
           <div class="act addbar">
-            <input id="w-add" list="w-syms" placeholder="Add a coin, e.g. SOL" autocomplete="off" aria-label="Add a coin">
+            <input id="w-add" list="w-syms" placeholder="Coin or stock: SOL, AAPL" autocomplete="off" aria-label="Add a coin or US stock">
             <datalist id="w-syms"></datalist>
             <button class="btn primary" id="w-add-btn"><svg><use href="#i-plus"/></svg>Add</button>
             <button class="iconbtn" id="w-refresh" title="Refresh"><svg><use href="#i-refresh"/></svg></button>
           </div>
         </div>
         <div class="table-wrap" id="w-table"><div class="empty"><span class="spin"></span></div></div>
-        <p class="note">Trend uses the bot's own rule (DI+ above DI-, length 38) on each timeframe; score = how many of the four are up. The bot trades BTC only. Other coins are for analysis. RSI and distance to the 200-day MA are daily.</p>
+        <p class="note">Trend uses the bot's own rule (DI+ above DI-, length 38) on each timeframe; score = how many of the four are up. Coins use 4h / 8h / 12h / 1d; US stocks use 1h / 4h / 1d / 1w of regular trading hours (4h = 9:30–13:30 and 13:30–16:00 New York), and their change is since the previous close. Stock prices come from Yahoo Finance and can lag a few minutes. If a ticker is also a coin, type $ in front of it for the stock (e.g. $COIN). The bot trades BTC only; everything else is for analysis. RSI and distance to the 200-day MA are daily.</p>
       </div>
     </section>
 
@@ -497,7 +499,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme
 
 /* ---------------- navigation ---------------- */
 const TITLES = {overview: ["Overview", "BTC · DI crossover + ADX-14 trigger · 4h · 8h · 12h · 1d"], charts: ["Charts", "Candles, indicators and drawing tools"],
-  watchlist: ["Watchlist", "Other coins on Binance.US, read with the bot's DI rule"], trades: ["Trades", "Every trade the bot has made"],
+  watchlist: ["Watchlist", "Coins on Binance.US and US stocks, read with the bot's DI rule"], trades: ["Trades", "Every trade the bot has made"],
   activity: ["Activity", "Signals and orders"], settings: ["Settings", "Bot configuration and this device"]};
 let view = "overview";
 function show(v) {
@@ -915,7 +917,7 @@ const Charts = (() => {
   function setAll() {
     if (!main || !st.bars.length) return;
     const d = computed = compute();
-    const prec = precisionFor(st.bars.at(-1).c);
+    const prec = st.stock ? 2 : precisionFor(st.bars.at(-1).c);   // stocks trade in cents
     main.series.price.applyOptions({priceFormat: {type: "price", precision: prec, minMove: 1 / 10 ** prec}});
     Object.entries(d.main).forEach(([k, v]) => main.series[k] && main.series[k].setData(v));
     panes.slice(1).forEach(p => Object.entries(d.sub[p.id] || {}).forEach(([k, v]) => p.series[k] && p.series[k].setData(v)));
@@ -933,7 +935,7 @@ const Charts = (() => {
     st.loading = true; st.bars = []; $("#legend").innerHTML = '<span class="spin"></span>';
     try {
       const r = await api(`api/candles?symbol=${st.sym}&tf=${st.tf}`);
-      st.bars = toBars(r); st.hasMore = r.has_more;
+      st.bars = toBars(r); st.hasMore = r.has_more; st.stock = r.kind === "stock";
       setAll();
       main.chart.timeScale().setVisibleLogicalRange({from: Math.max(0, st.bars.length - 150), to: st.bars.length + 6});
     } catch (e) { $("#legend").innerHTML = `<span class="bad">Couldn't load candles: ${esc(e.message)}</span>`; }
@@ -1303,21 +1305,23 @@ const Watch = (() => {
     return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${up ? "var(--good)" : "var(--bad)"}" stroke-width="1.6" points="${a.map((v, i) => x(i).toFixed(1) + "," + y(v).toFixed(1)).join(" ")}"/></svg>`;
   }
   function render() {
-    if (!rows.length) { $("#w-table").innerHTML = '<div class="empty">No coins yet. Add one above.</div>'; return; }
+    if (!rows.length) { $("#w-table").innerHTML = '<div class="empty">Nothing on the list yet. Add a coin or a stock above.</div>'; return; }
     const keyf = {symbol: r => r.symbol, price: r => r.price, change: r => r.change, volume: r => r.volume, score: r => r.score, rsi: r => r.rsi, vs_ma200: r => r.vs_ma200};
     const list = sortKey === "default" ? rows : [...rows].sort((a, b) => { const x = keyf[sortKey](a), y = keyf[sortKey](b);
       return (x == null) - (y == null) || (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
     const th = (k, l, num) => `<th class="sort ${num ? "num" : ""}" data-k="${k}">${l}${sortKey === k ? (sortDir > 0 ? " ↑" : " ↓") : ""}</th>`;
-    $("#w-table").innerHTML = `<table><thead><tr>${th("symbol", "Coin")}${th("price", "Price", 1)}${th("change", "24h", 1)}${th("volume", "24h volume", 1)}<th>7 days</th><th>DI trend</th>${th("score", "Score")}${th("rsi", "RSI 1d", 1)}${th("vs_ma200", "vs MA 200", 1)}<th></th></tr></thead><tbody>` +
+    $("#w-table").innerHTML = `<table><thead><tr>${th("symbol", "Symbol")}${th("price", "Price", 1)}${th("change", "Change", 1)}${th("volume", "Volume", 1)}<th>Last week</th><th>DI trend</th>${th("score", "Score")}${th("rsi", "RSI 1d", 1)}${th("vs_ma200", "vs MA 200", 1)}<th></th></tr></thead><tbody>` +
       list.map(r => {
         const tfs = r.tfs ? Object.entries(r.tfs).map(([tf, v]) => `<span class="${v.up ? "u" : "d"}" title="${tf}: DI+ ${v.di_plus} / DI- ${v.di_minus}${v.bars_since_cross != null ? ` · crossed ${v.bars_since_cross} candles ago` : ""}">${tf} ${v.up ? "▲" : "▼"}</span>`).join("") : "";
         const rc = r.rsi == null ? "" : r.rsi <= 30 ? "good" : r.rsi >= 70 ? "bad" : "";
-        return `<tr><td><div class="coin"><div class="av" style="background:${color(r.symbol)}">${esc(base(r.symbol).slice(0, 4))}</div>
-            <div><b>${esc(base(r.symbol))}</b> <small>/${esc(r.symbol.slice(base(r.symbol).length))}</small> ${r.bot ? '<span class="tag">BOT</span>' : ""}</div></div></td>
-          <td class="num"><b>${price(r.price)}</b></td><td class="num ${cls(r.change)}">${r.change == null ? "–" : (r.change >= 0 ? "+" : "") + r.change.toFixed(2) + "%"}</td>
+        const stock = r.kind === "stock", b = stock ? r.symbol : base(r.symbol);
+        return `<tr><td><div class="coin"><div class="av${stock ? " sq" : ""}" style="background:${color(r.symbol)}">${esc(b.slice(0, 4))}</div>
+            <div><b>${esc(b)}</b> ${stock ? `<span class="tag stock">STOCK</span><br><small title="${esc(r.name || "")}">${esc((r.name || "").slice(0, 28))}</small>`
+              : `<small>/${esc(r.symbol.slice(b.length))}</small>`} ${r.bot ? '<span class="tag">BOT</span>' : ""}</div></div></td>
+          <td class="num"><b>${price(r.price)}</b></td><td class="num ${cls(r.change)}" title="${stock ? "Since the previous close" : "Last 24 hours"}">${r.change == null ? "–" : (r.change >= 0 ? "+" : "") + r.change.toFixed(2) + "%"}</td>
           <td class="num">${big(r.volume)}</td><td>${spark(r.spark, r.spark && r.spark.at(-1) >= r.spark[0])}</td>
           <td>${r.error ? `<span class="bad" title="${esc(r.error)}">unavailable</span>` : `<div class="tfdots">${tfs}</div>`}</td>
-          <td>${r.score == null ? "" : `<div class="score" title="${r.score} of 4 timeframes up">${[0, 1, 2, 3].map(i => `<i class="${i < r.score ? "on" : ""}"></i>`).join("")}</div>`}</td>
+          <td>${r.score == null ? "" : `<div class="score" title="${r.score} of ${Object.keys(r.tfs || {}).length} timeframes up">${[0, 1, 2, 3].map(i => `<i class="${i < r.score ? "on" : ""}"></i>`).join("")}</div>`}</td>
           <td class="num ${rc}">${r.rsi == null ? "–" : r.rsi.toFixed(0)}</td><td class="num ${cls(r.vs_ma200)}">${r.vs_ma200 == null ? "–" : (r.vs_ma200 >= 0 ? "+" : "") + r.vs_ma200.toFixed(1) + "%"}</td>
           <td><button class="btn" data-open="${esc(r.symbol)}"><svg><use href="#i-chart"/></svg>Chart</button>${r.bot ? "" : ` <button class="x" title="Remove" data-del="${esc(r.symbol)}">×</button>`}</td></tr>`;
       }).join("") + "</tbody></table>";
@@ -1338,11 +1342,13 @@ const Watch = (() => {
     catch (e) { toast("Couldn't update the watchlist: " + esc(e.message), "bad"); }
   }
   async function add() {
-    const v = $("#w-add").value.trim().toUpperCase(); if (!v) return;
-    const m = symbols.find(s => s.symbol === v) || symbols.find(s => s.base === v && s.quote === "USDT") || symbols.find(s => s.base === v);
-    if (!m) { toast(`"${esc(v)}" isn't a coin on Binance.US.`, "bad"); return; }
-    if (rows.some(r => r.symbol === m.symbol)) { toast(esc(m.symbol) + " is already on the list."); return; }
-    $("#w-add").value = ""; toast("Adding " + esc(m.symbol) + "…"); save(rows.map(r => r.symbol).concat(m.symbol));
+    let v = $("#w-add").value.trim().toUpperCase(); if (!v) return;
+    const forceStock = v.startsWith("$"); v = v.replace(/^\$/, "");
+    const m = forceStock ? null : symbols.find(s => s.symbol === v) || symbols.find(s => s.base === v && s.quote === "USDT") || symbols.find(s => s.base === v);
+    const sym = m ? m.symbol : v;   // not a coin: try it as a US stock ticker (the server checks)
+    if (!m && !/^[A-Z][A-Z0-9.\-]{0,9}$/.test(v)) { toast(`"${esc(v)}" isn't a coin on Binance.US or a stock ticker.`, "bad"); return; }
+    if (rows.some(r => r.symbol === sym)) { toast(esc(sym) + " is already on the list."); return; }
+    $("#w-add").value = ""; toast("Adding " + esc(sym) + (m ? "" : " (US stock)") + "…"); save(rows.map(r => r.symbol).concat(sym));
   }
   $("#w-add-btn").onclick = add; $("#w-add").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
   $("#w-refresh").onclick = () => load(true);
