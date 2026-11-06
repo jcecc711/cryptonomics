@@ -43,9 +43,13 @@ class Config:
     di_len: int = 38
     adx_smoothing: int = 9
 
-    # The ensemble: the same DI cross on each of these timeframes, each trading
-    # an equal share of the money ("sleeve").
+    # The ensemble: each strategy runs on each of these timeframes, every
+    # (strategy, timeframe) pair trading an equal share of the money ("sleeve").
+    #   di   buy when DI+ crosses above DI-, sell when it crosses back below
+    #   adx  buy when ADX rises through `adx_level` with DI+ on top, sell when DI+ crosses below DI-
     timeframes: tuple = ("4h", "8h", "12h", "1d")
+    strategies: tuple = ("di", "adx")
+    adx_level: float = 14.0
 
     # Buy only on a fresh DI+ cross. If the bot starts while DI+ is already
     # above DI-, it waits for the next cross unless this is on.
@@ -71,6 +75,10 @@ class Config:
     dashboard_port: int = 8080
     dashboard_password: str = field(default="", repr=False)
 
+    def sleeve_specs(self):
+        """[(name, kind, timeframe)]; DI sleeves are named by timeframe, ADX ones 'adx-<tf>'."""
+        return [(tf if kind == "di" else f"{kind}-{tf}", kind, tf) for kind in self.strategies for tf in self.timeframes]
+
     @property
     def db_path(self):
         """Paper and live keep separate records, so switching to live starts clean."""
@@ -93,6 +101,8 @@ def load():
         di_len=int(e("BOT_DI_LEN", 38)),
         adx_smoothing=int(e("BOT_ADX_SMOOTHING", 9)),
         timeframes=tuple(t.strip() for t in e("BOT_TIMEFRAMES", "4h,8h,12h,1d").split(",") if t.strip()),
+        strategies=tuple(t.strip().lower() for t in e("BOT_STRATEGIES", "di,adx").split(",") if t.strip()),
+        adx_level=float(e("BOT_ADX_LEVEL", 14)),
         join_open_trend=_bool("BOT_JOIN_OPEN_TREND", False),
         max_order_usd=float(e("BOT_MAX_ORDER_USD", 1_000_000)),
         maker_timeout_min=float(e("BOT_MAKER_TIMEOUT_MIN", 10)),
@@ -115,5 +125,7 @@ def load():
     bad = [t for t in cfg.timeframes if t not in INTERVAL_MS]
     if bad or not cfg.timeframes or len(set(cfg.timeframes)) != len(cfg.timeframes):
         raise SystemExit(f"BOT_TIMEFRAMES must be distinct values from {sorted(INTERVAL_MS)}, got {cfg.timeframes}")
+    if not cfg.strategies or set(cfg.strategies) - {"di", "adx"} or len(set(cfg.strategies)) != len(cfg.strategies):
+        raise SystemExit(f"BOT_STRATEGIES must be one or both of di, adx; got {cfg.strategies}")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     return cfg

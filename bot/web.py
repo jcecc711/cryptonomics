@@ -159,11 +159,11 @@ def watchlist(cfg, store, client, lock):
 
 def status(cfg, store, lock):
     with lock:
-        sleeves = []
-        for name in cfg.timeframes:
+        sleeves, specs = [], cfg.sleeve_specs()
+        for name, kind, tf in specs:
             eq = store.rows("SELECT ts, value, cash, btc, price FROM equity WHERE strategy=? ORDER BY ts", name)
             sleeves.append({
-                "name": name, "share": 1 / len(cfg.timeframes),
+                "name": name, "kind": kind, "tf": tf, "share": 1 / len(specs),
                 "trade": store.current_trade(name),
                 "last": eq[-1] if eq else None, "start_value": eq[0]["value"] if eq else None,
                 "signals": store.rows("SELECT * FROM signals WHERE strategy=? ORDER BY candle_time DESC LIMIT 20",
@@ -179,6 +179,7 @@ def status(cfg, store, lock):
             "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
             "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),
             "settings": {"mode": cfg.mode, "symbol": cfg.symbol, "timeframes": list(cfg.timeframes),
+                         "strategies": list(cfg.strategies), "adx_level": cfg.adx_level,
                          "di_len": cfg.di_len, "adx_smoothing": cfg.adx_smoothing,
                          "join_open_trend": cfg.join_open_trend, "max_order_usd": cfg.max_order_usd,
                          "maker_timeout_min": cfg.maker_timeout_min, "taker_fallback": cfg.taker_fallback,

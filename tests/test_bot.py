@@ -90,6 +90,7 @@ class Clock:
 
 def make_cfg(tmp, **kw):
     kw.setdefault("timeframes", ("1d",))
+    kw.setdefault("strategies", ("di",))
     return Config(data_dir=Path(tmp), poll_sec=10, maker_timeout_min=1, **kw)
 
 
@@ -155,6 +156,8 @@ class TestSettingsFile(unittest.TestCase):
         self.assertEqual(cfg.timeframes, ("4h", "8h", "12h", "1d"))
         self.assertEqual(cfg.max_order_usd, 1_000_000)
         self.assertEqual(cfg.maker_timeout_min, 10)
+        self.assertEqual(cfg.strategies, ("di", "adx"))
+        self.assertEqual(cfg.adx_level, 14)
 
 
 class TestKlines(unittest.TestCase):
@@ -229,6 +232,57 @@ class TestStrategy(unittest.TestCase):
         self.assertEqual(strategy.decide(down, False, False), (None, True))
         self.assertEqual(strategy.decide(up, False, True), ("BUY", True))
         self.assertEqual(strategy.decide(down, True, True), ("SELL", True))
+
+
+class TestAdxTrigger(unittest.TestCase):
+    def test_bot_trades_the_same_candles_as_the_backtest(self):
+        """Feeding one closed candle per run reproduces bench/adx_hybrid.py's ADX trigger:
+        buy when ADX rises through 14 with DI+ on top, sell when DI+ crosses below DI-."""
+        h4 = synthetic_candles(n=1500, seed=11, freq="4h", vol=0.012)
+        d = adx(h4, 38, 9)
+        up = d.di_plus > d.di_minus
+        trig = (d.adx > 14) & (d.adx.shift() <= 14) & up
+        ref_e, ref_x, holding = [], [], False
+        for i in range(300, len(h4)):
+            if not holding and trig.iloc[i]:
+                holding = True
+                ref_e.append(h4.index[i])
+            elif holding and not up.iloc[i]:
+                holding = False
+                ref_x.append(h4.index[i])
+
+        bot_e, bot_x, holding, state = [], [], False, {"last": str(h4.index[299])}
+        for i in range(300, len(h4)):
+            sig = strategy.evaluate_adx(h4.iloc[: i + 1], 38, 9, 14)
+            action, state = strategy.decide_adx(sig, holding, state)
+            if action == "BUY":
+                holding = True
+                bot_e.append(h4.index[i])
+            elif action == "SELL":
+                holding = False
+                bot_x.append(h4.index[i])
+        self.assertGreater(len(ref_e), 5)
+        self.assertEqual(bot_e, ref_e)
+        self.assertEqual(bot_x, ref_x)
+
+    def sig(self, triggers, trend_up=True):
+        t = pd.date_range("2026-01-01", periods=len(triggers), freq="4h")
+        return {"candle_time": t[-1], "trend_up": trend_up, "recent": pd.Series(triggers, index=t)}, t
+
+    def test_catches_a_trigger_it_missed_while_offline(self):
+        sig, t = self.sig([False, True, False, False])
+        self.assertEqual(strategy.decide_adx(sig, False, {"last": str(t[0])})[0], "BUY")
+        self.assertIsNone(strategy.decide_adx(sig, False, {"last": str(t[1])})[0])      # already processed
+        sig, t = self.sig([False, True, False, False], trend_up=False)
+        self.assertIsNone(strategy.decide_adx(sig, False, {"last": str(t[0])})[0])     # DI- took over since
+
+    def test_first_run_only_acts_on_the_latest_candle(self):
+        sig, t = self.sig([True, False, False])
+        self.assertIsNone(strategy.decide_adx(sig, False, {})[0])
+
+    def test_sells_when_di_minus_takes_over(self):
+        sig, _ = self.sig([False], trend_up=False)
+        self.assertEqual(strategy.decide_adx(sig, True, {})[0], "SELL")
 
 
 class TestPaperExecution(unittest.TestCase):
@@ -396,6 +450,41 @@ class TestEnsemble(unittest.TestCase):
         paper, live = make_cfg(self.tmp.name), make_cfg(self.tmp.name, mode="live")
         self.assertNotEqual(paper.db_path, live.db_path)
 
+    def test_blend_makes_eight_equal_sleeves(self):
+        self.cfg.strategies = ("di", "adx")
+        _, sleeves, _ = run.make(self.cfg, FakeClient(), self.store)
+        self.assertEqual([s.name for s in sleeves], ["4h", "8h", "12h", "1d", "adx-4h", "adx-8h", "adx-12h", "adx-1d"])
+        self.assertEqual([s.kind for s in sleeves], ["di"] * 4 + ["adx"] * 4)
+        self.assertEqual({s.tf for s in sleeves}, {"4h", "8h", "12h", "1d"})
+        self.assertEqual([s.broker.balances()[0] for s in sleeves], [Decimal("125.0")] * 8)
+
+    def test_blend_runs_and_total_adds_up(self):
+        self.cfg.strategies = ("di", "adx")
+        candles = ensemble_candles()
+        clock = Clock()
+        client = FakeClient([(0, "100.00", "100.01"), (5, "99.99", "100.00")], candles, clock)
+        _, sleeves, _ = run.make(self.cfg, client, self.store)
+        with FakeTime(clock):
+            results = run.run_once(self.cfg, client, sleeves, self.store)
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(sig is not None for sig, _, _ in results.values()))
+        self.assertIn("adx", results["adx-4h"][0]["readings"])
+        rows = {r["strategy"]: r for r in self.store.rows("SELECT * FROM equity")}
+        names = [s.name for s in sleeves]
+        self.assertAlmostEqual(rows["total"]["value"], sum(rows[n]["value"] for n in names))
+        self.assertAlmostEqual(rows["total"]["value"], 1000.0, delta=1000 * 0.0003)
+
+    def test_rejects_unknown_strategies(self):
+        import os
+        from bot import config
+        os.environ["BOT_STRATEGIES"] = "di,rsi"
+        os.environ["BOT_DATA_DIR"] = self.tmp.name
+        try:
+            with self.assertRaises(SystemExit):
+                config.load()
+        finally:
+            del os.environ["BOT_STRATEGIES"], os.environ["BOT_DATA_DIR"]
+
     def test_rejects_unknown_timeframes(self):
         import os
         from bot import config
@@ -444,6 +533,18 @@ class TestDashboard(unittest.TestCase):
             body, code = e.read(), e.code
         self.assertEqual(code, expect, body[:200])
         return json.loads(body)
+
+    def test_status_lists_both_strategies(self):
+        cfg = make_cfg(self.tmp.name, timeframes=("4h", "1d"), strategies=("di", "adx"))
+        srv = web.make_server(cfg, port=0, client=FakeClient(candles=ensemble_candles()))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        s = self.get(f"http://127.0.0.1:{srv.server_address[1]}/api/status")
+        self.assertEqual([(x["name"], x["kind"], x["tf"], x["share"]) for x in s["sleeves"]],
+                         [("4h", "di", "4h", 0.25), ("1d", "di", "1d", 0.25),
+                          ("adx-4h", "adx", "4h", 0.25), ("adx-1d", "adx", "1d", 0.25)])
+        self.assertEqual(s["settings"]["strategies"], ["di", "adx"])
 
     def test_page_and_status(self):
         url = self.serve()

@@ -5,9 +5,9 @@
     python -m bot.run status      print the current state
     python -m bot.run web         start the dashboard
 
-The ensemble: the DI(38) cross runs on each timeframe in BOT_TIMEFRAMES
-(default 4h, 8h, 12h, 1d), each as a sleeve with an equal share of the money
-and its own cash and BTC. Paper is the default.
+The ensemble: each strategy in BOT_STRATEGIES (DI cross and ADX-14 trigger)
+runs on each timeframe in BOT_TIMEFRAMES (4h, 8h, 12h, 1d), each pair as a
+sleeve with an equal share of the money and its own cash and BTC. Paper is the default.
 Create data/STOP to stop all new orders.
 """
 import fcntl
@@ -26,10 +26,11 @@ log = logging.getLogger("bot")
 
 
 class Sleeve:
-    """The DI cross on one timeframe, trading its own share of the money."""
+    """One strategy ("di" or "adx") on one timeframe, trading its own share of the money."""
 
-    def __init__(self, name, share, mode, broker, store, cfg):
-        self.name, self.share, self.mode = name, share, mode   # name is the timeframe, e.g. "4h"
+    def __init__(self, name, share, mode, broker, store, cfg, kind="di", tf=None):
+        self.name, self.share, self.mode = name, share, mode   # e.g. "4h" (DI) or "adx-4h"
+        self.kind, self.tf = kind, tf or name
         self.broker, self.store, self.cfg = broker, store, cfg
 
     # Sleeve balances: what this sleeve owns, separate from the account total.
@@ -49,8 +50,20 @@ class Sleeve:
     def funded(self):
         return self.store.get(f"{self.name}.cash") is not None
 
+    def evaluate(self, candles):
+        if self.kind == "adx":
+            return strategy.evaluate_adx(candles, self.cfg.di_len, self.cfg.adx_smoothing, self.cfg.adx_level)
+        return strategy.evaluate(candles, self.cfg.di_len, self.cfg.adx_smoothing)
+
+    def summary(self, sig, trade, price):
+        return (strategy.summary_adx if self.kind == "adx" else strategy.summary)(sig, trade, price)
+
     def decide(self, sig, holding):
         key = f"{self.name}.state"
+        if self.kind == "adx":
+            action, state = strategy.decide_adx(sig, holding, self.store.get(key, {}))
+            self.store.set(key, state)
+            return action
         armed = self.store.get(key)
         if armed is None:  # first run
             armed = self.cfg.join_open_trend or not sig["trend_up"]
@@ -59,8 +72,10 @@ class Sleeve:
         return action
 
     def step(self, client, filters_cache):
-        candles = client.klines(self.cfg.symbol, self.name)
-        sig = strategy.evaluate(candles, self.cfg.di_len, self.cfg.adx_smoothing)
+        key = ("candles", self.tf)        # sleeves on the same timeframe share one download
+        if key not in filters_cache:
+            filters_cache[key] = client.klines(self.cfg.symbol, self.tf)
+        sig = self.evaluate(filters_cache[key])
         trade = self.store.current_trade(self.name)
         action = self.decide(sig, trade is not None)
         note = ""
@@ -98,13 +113,14 @@ class Sleeve:
 def make(cfg, client=None, store=None):
     client = client or BinanceUS(cfg.api_key, cfg.api_secret)
     store = store or Store(cfg.db_path)
-    share = 1 / len(cfg.timeframes)
+    specs = cfg.sleeve_specs()
+    share = 1 / len(specs)
     live = LiveBroker(client, cfg.symbol, cfg.base_asset, cfg.quote_asset) if cfg.mode == "live" else None
     sleeves = []
-    for tf in cfg.timeframes:
+    for name, kind, tf in specs:
         broker = live or PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee, cfg.paper_taker_fee,
-                                     cfg.paper_start_usd * share, key=f"paper.{tf}")
-        sleeves.append(Sleeve(tf, share, cfg.mode, broker, store, cfg))
+                                     cfg.paper_start_usd * share, key=f"paper.{name}")
+        sleeves.append(Sleeve(name, share, cfg.mode, broker, store, cfg, kind, tf))
     return client, sleeves, store
 
 
@@ -144,7 +160,7 @@ def run_once(cfg, client, sleeves, store):
         total_cash, total_btc = total_cash + cash, total_btc + btc
         store.snapshot(ts, s.name, cash, btc, price)
         sig, action, note = results[s.name]
-        text = strategy.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
+        text = s.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
         report[s.name] = {"summary": text, "note": note, "mode": s.mode, "share": s.share}
         log.info("[%s/%s] %s %s", s.name, s.mode, text, note)
     store.snapshot(ts, "total", total_cash, total_btc, price)

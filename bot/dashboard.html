@@ -86,6 +86,10 @@ main { min-width: 0; padding: 20px 24px 64px; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; margin-bottom: 16px; }
 .sleeves { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
 .sleeve .head { display: flex; align-items: center; gap: 8px; }
+.grp { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 4px 2px -4px; font-weight: 700; }
+.grp small { color: var(--muted); font-weight: 500; }
+.kind { font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 6px; color: #fff; }
+.k-di { background: var(--g2); } .k-adx { background: var(--g3); }
 .sleeve .tf { font-size: 20px; font-weight: 800; }
 .pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--chip); color: var(--muted); }
 .pill.hold { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
@@ -263,7 +267,7 @@ td.num, th.num { text-align: right; }
     <header class="top">
       <div>
         <h1 id="title">Overview</h1>
-        <div class="sub" id="subtitle">BTC DI(38) ensemble · 4h · 8h · 12h · 1d</div>
+        <div class="sub" id="subtitle">BTC · DI crossover + ADX-14 trigger · 4h · 8h · 12h · 1d</div>
       </div>
       <div class="right">
         <span id="mode" class="badge b-paper">PAPER</span>
@@ -404,7 +408,8 @@ const store = {
 };
 const usd = (x, d = 0) => x == null || isNaN(x) ? "–" : (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
 const price = x => x == null ? "–" : x >= 1000 ? usd(x, 0) : x >= 1 ? usd(x, 2) : usd(x, x >= 0.01 ? 4 : 6);
-const pct = (x, d = 1) => x == null || isNaN(x) ? "–" : (x >= 0 ? "+" : "") + (x * 100).toFixed(d) + "%";
+const pct = (x, d = 1) => { if (x == null || isNaN(x)) return "–"; const s = (x * 100).toFixed(d);
+  return (Number(s) === 0 ? (0).toFixed(d) : s).replace(/^(?!-)/, "+") + "%"; };
 const cls = x => x == null ? "" : x >= 0 ? "good" : "bad";
 const big = x => x == null ? "–" : x >= 1e9 ? "$" + (x / 1e9).toFixed(2) + "B" : x >= 1e6 ? "$" + (x / 1e6).toFixed(2) + "M" : x >= 1e3 ? "$" + (x / 1e3).toFixed(1) + "K" : usd(x);
 const TF_SEC = {"15m": 900, "1h": 3600, "2h": 7200, "3h": 10800, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400, "1w": 604800};
@@ -444,7 +449,7 @@ $$("#s-theme button").forEach(b => b.onclick = () => { store.set("theme", b.data
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 
 /* ---------------- navigation ---------------- */
-const TITLES = {overview: ["Overview", "BTC DI(38) ensemble · 4h · 8h · 12h · 1d"], charts: ["Charts", "Candles, indicators and drawing tools"],
+const TITLES = {overview: ["Overview", "BTC · DI crossover + ADX-14 trigger · 4h · 8h · 12h · 1d"], charts: ["Charts", "Candles, indicators and drawing tools"],
   watchlist: ["Watchlist", "Other coins on Binance.US, read with the bot's DI rule"], trades: ["Trades", "Every trade the bot has made"],
   activity: ["Activity", "Signals and orders"], settings: ["Settings", "Bot configuration and this device"]};
 let view = "overview";
@@ -494,7 +499,8 @@ async function refresh() {
 function sleeveState(sl) {
   const sig = sl.signals[0], r = sig ? JSON.parse(sig.readings || "{}") : {};
   const up = sig ? r.di_plus > r.di_minus : null;
-  const st = sl.trade ? ["Holding BTC", "hold"] : up ? ["Waiting: fresh cross", "wait"] : ["In cash", ""];
+  const st = sl.trade ? ["Holding BTC", "hold"]
+    : up ? (sl.kind === "adx" ? [`Waiting: ADX ↑ ${r.level ?? 14}`, "wait"] : ["Waiting: fresh cross", "wait"]) : ["In cash", ""];
   return {sig, r, up, st};
 }
 function renderOverview() {
@@ -523,25 +529,35 @@ function renderOverview() {
   $("#k-trades-s").textContent = closed.length ? `${Math.round(100 * wins / closed.length)}% winners · ${s.trades.length - closed.length} open` : `${s.trades.length} open`;
 
   const now = Date.now() / 1000;
-  $("#sleeves").innerHTML = s.sleeves.map(sl => {
-    const {sig, r, st} = sleeveState(sl);
-    const sec = TF_SEC[sl.name], next = Math.ceil(now / sec) * sec;
+  const card = sl => {
+    const {r, st} = sleeveState(sl);
+    const sec = TF_SEC[sl.tf], next = Math.ceil(now / sec) * sec;
     const share = r.di_plus != null ? 100 * r.di_plus / (r.di_plus + r.di_minus) : 50;
     const ret = sl._val != null && sl.start_value ? sl._val / sl.start_value - 1 : null;
     const open = sl.trade ? px / sl.trade.entry_price - 1 : null;
     const note = s.last_run && s.last_run.sleeves && s.last_run.sleeves[sl.name] ? s.last_run.sleeves[sl.name].note : "";
+    const adxRow = sl.kind === "adx" ? `<div class="row"><span class="l">ADX / trigger line</span><span>${r.adx != null ? r.adx.toFixed(1) : "–"} / ${r.level ?? 14}</span></div>` : "";
     return `<div class="panel sleeve">
-      <div class="head"><span class="tf">${sl.name}</span><span class="pill ${st[1]}">${st[0]}</span></div>
+      <div class="head"><span class="tf">${esc(sl.tf)}</span><span class="kind k-${esc(sl.kind)}">${sl.kind === "adx" ? "ADX" : "DI"}</span><span class="pill ${st[1]}">${st[0]}</span></div>
       <div class="gauge" title="DI+ share of DI+ + DI-">
         <div class="bar"><i style="width:${share.toFixed(1)}%"></i></div>
         <div class="lbl"><span style="color:var(--up)">DI+ ${r.di_plus != null ? r.di_plus.toFixed(1) : "–"}</span>
           <span style="color:var(--down)">DI- ${r.di_minus != null ? r.di_minus.toFixed(1) : "–"}</span></div>
       </div>
+      ${adxRow}
       <div class="row"><span class="l">Value</span><span>${usd(sl._val)} <span class="${cls(ret)}">${ret == null ? "" : pct(ret)}</span></span></div>
       <div class="row"><span class="l">Open trade</span><span>${open == null ? "–" : `<span class="${cls(open)}">${pct(open)}</span> from ${price(sl.trade.entry_price)}`}</span></div>
-      <div class="row"><span class="l">Candle closes in</span><span data-countdown="${next}">${hms(next - now)}</span></div>
+      <div class="row"><span class="l">Candle closes in</span><span data-countdown="${next}" data-tf="${esc(sl.tf)}">${hms(next - now)}</span></div>
       ${note ? `<div class="note">${esc(note)}</div>` : ""}
     </div>`;
+  };
+  const GROUPS = {di: ["DI crossover", "buys when DI+ crosses above DI-"], adx: ["ADX-14 trigger", "buys when ADX rises through 14 with DI+ on top"]};
+  const kinds = [...new Set(s.sleeves.map(x => x.kind || "di"))];
+  $("#sleeves").innerHTML = kinds.map(k => {
+    const list = s.sleeves.filter(x => (x.kind || "di") === k), pctShare = Math.round(100 * list.reduce((a, x) => a + x.share, 0));
+    const val = list.reduce((a, x) => a + (x._val || 0), 0), start = list.reduce((a, x) => a + (x.start_value || 0), 0);
+    const r = start ? val / start - 1 : null;
+    return `<div class="grp">${GROUPS[k][0]} <small>${pctShare}% of account · ${usd(val)} <span class="${cls(r)}">${r == null ? "" : pct(r)}</span> · ${GROUPS[k][1]}</small></div>` + list.map(card).join("");
   }).join("");
 
   const pf = perfStats(closed);
@@ -557,7 +573,7 @@ setInterval(() => {   // live countdowns
   const now = Date.now() / 1000;
   $$("[data-countdown]").forEach(el => {
     let t = +el.dataset.countdown;
-    if (t <= now) { const tf = el.closest(".sleeve").querySelector(".tf").textContent; t = Math.ceil(now / TF_SEC[tf]) * TF_SEC[tf]; el.dataset.countdown = t; }
+    if (t <= now) { const sec = TF_SEC[el.dataset.tf]; t = Math.ceil(now / sec) * sec; el.dataset.countdown = t; }
     el.textContent = hms(t - now);
   });
 }, 1000);
@@ -655,7 +671,8 @@ function renderActivity() {
 function renderSettings() {
   const c = S.status.settings;
   const rows = [["Mode", c.mode === "live" ? "Live (real money)" : "Paper (practice)"], ["Pair", c.symbol], ["Timeframes", c.timeframes.join(", ")],
-    ["Rule", `DI+ / DI- cross, length ${c.di_len} (ADX smoothing ${c.adx_smoothing})`], ["Join a trend already running", c.join_open_trend ? "Yes" : "No, wait for a fresh cross"],
+    ["Strategies", (c.strategies || ["di"]).map(k => k === "adx" ? `ADX-${c.adx_level} trigger` : "DI crossover").join(" + ") + ", equal shares"],
+    ["Indicator settings", `DI length ${c.di_len}, ADX smoothing ${c.adx_smoothing}`], ["Join a trend already running", c.join_open_trend ? "Yes" : "No, wait for a fresh cross"],
     ["Max order per sleeve", usd(c.max_order_usd)], ["Maker order patience", c.maker_timeout_min + " min, then " + (c.taker_fallback ? "cross the spread (max " + (c.max_slippage * 100).toFixed(1) + "%)" : "give up")],
     ["Paper starting balance", usd(c.paper_start_usd)], ["Dashboard password", c.password_set ? "Set" : "Not set"], ["Kill switch", S.status.kill_switch ? "ON: no new orders" : "Off"]];
   $("#s-bot").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join("");

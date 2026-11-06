@@ -4,20 +4,22 @@ Personal BTC spot trading system for Binance.US.
 
 ## The strategy
 
-**DI+ / DI- crossover, DI length 38 (ADX smoothing 9), run on four
-timeframes at once: 4h, 8h, 12h and daily.** Each timeframe is a "sleeve" with
-25% of the money and its own cash and BTC. A sleeve buys when DI+ crosses above
-DI- on its closed candle and sells when it crosses back below. Spot only: each
-sleeve is either in BTC or in cash, so the account holds 0–100% BTC depending
-on how many timeframes agree.
+Two rules, each on four timeframes (4h, 8h, 12h, daily), DI length 38 and ADX
+smoothing 9. Every rule-and-timeframe pair is a "sleeve" with an equal share of
+the money (8 x 12.5%) and its own cash and BTC:
 
-Tested in `bench/` on BTC 2016 → Oct 2025 (`strategy_scan.py`,
-`di_timeframes.py`): out of 8 strategy families on 7 timeframes, the DI cross
-on 4h–12h scored best. The four-timeframe ensemble returned about 85% a year
-with a 39% worst drawdown, beat the daily-only version in about 80% of
-two-year windows, and cut the chance of a drawdown worse than 35% from 42% to
-13%. It lags the daily-only version in choppy, falling markets (+1% vs +7.5%
-in the twelve months to Oct 2026).
+- **DI crossover:** buy when DI+ crosses above DI-, sell when it crosses back below.
+- **ADX-14 trigger:** buy when ADX rises through 14 with DI+ on top, sell when
+  DI+ crosses below DI-.
+
+Spot only: each sleeve is either in BTC or in cash.
+
+Tested on BTC 2016 -> Oct 2025 (`bench/strategy_scan.py`, `di_timeframes.py`,
+`adx14.py`, `adx_hybrid.py`). The DI crossover alone returned about 92% a year
+with a 39% worst drawdown; the 50/50 blend with the ADX trigger about 77% a year
+with a 32% worst drawdown: the same return for the risk, it never fell more than
+35% within any two-year window, and it held up better in choppy and falling
+markets. It gives up growth in strong bull runs.
 
 ## The bot
 
