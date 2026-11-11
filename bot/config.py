@@ -77,6 +77,8 @@ class Config:
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8080
     dashboard_password: str = field(default="", repr=False)
+    ntfy_topic: str = field(default="", repr=False)   # phone alerts; empty = off
+    ntfy_server: str = "https://ntfy.sh"
 
     def sleeve_specs(self):
         """[(name, kind, timeframe)]; DI sleeves are named by timeframe, ADX ones 'adx-<tf>'."""
@@ -120,6 +122,8 @@ def load():
         dashboard_host=e("DASHBOARD_HOST", "127.0.0.1"),
         dashboard_port=int(e("DASHBOARD_PORT", 8080)),
         dashboard_password=e("DASHBOARD_PASSWORD", ""),
+        ntfy_topic=e("BOT_NTFY_TOPIC", ""),
+        ntfy_server=e("BOT_NTFY_SERVER", "https://ntfy.sh"),
     )
     if cfg.mode not in ("paper", "live"):
         raise SystemExit(f"BOT_MODE must be 'paper' or 'live', got {cfg.mode!r}")

@@ -467,6 +467,54 @@ class TestRunOnce(unittest.TestCase):
         self.assertIn("waiting for a fresh cross", self.store.get("last_run")["sleeves"]["1d"]["summary"])
 
 
+class TestAlerts(TestRunOnce):
+    def run_once(self):
+        self.sent = getattr(self, "sent", [])
+        def post(url, data, timeout, headers):
+            self.sent.append((url, headers["Title"], data.decode(), headers["Priority"]))
+            return unittest.mock.Mock(raise_for_status=lambda: None)
+        with unittest.mock.patch("bot.notify.requests.post", post):
+            return super().run_once()
+
+    def test_alerts_on_a_fill_once_per_regime_and_not_without_a_topic(self):
+        super().run_once()                                   # no topic: nothing sent, nothing breaks
+        self.assertFalse(hasattr(self, "sent"))
+        self.store.db.execute("DELETE FROM state")
+        self.store.db.execute("DELETE FROM trades")
+        self.store.db.execute("DELETE FROM signals")
+        self.store.db.commit()
+        self.cfg.ntfy_topic = "cnx-test"
+        self.run_once()
+        titles = [s[1] for s in self.sent]
+        self.assertTrue(all(s[0] == "https://ntfy.sh/cnx-test" for s in self.sent))
+        buy = [s for s in self.sent if s[1].startswith("BUY BTC - 1d DI cross (PAPER)")]
+        self.assertEqual(len(buy), 1, titles)
+        self.assertIn("bought", buy[0][2])
+        self.assertEqual(buy[0][3], "high")
+        self.assertEqual(sum(t.startswith("Market regime") for t in titles), 1)
+        n = len(self.sent)
+        self.run_once()                                      # holding, same regime: quiet
+        self.assertEqual(len(self.sent), n, [s[1] for s in self.sent[n:]])
+
+    def test_kill_switch_alerts_once(self):
+        self.cfg.ntfy_topic = "cnx-test"
+        self.cfg.stop_file.touch()
+        self.run_once()
+        self.run_once()
+        warn = [s for s in self.sent if "needs a look" in s[1]]
+        self.assertEqual(len(warn), 1)
+        self.assertIn("kill switch", warn[0][2])
+
+    def test_failed_send_does_not_stop_the_bot(self):
+        self.cfg.ntfy_topic = "cnx-test"
+        def boom(*a, **k):
+            raise OSError("network down")
+        with unittest.mock.patch("bot.notify.requests.post", boom), FakeTime(self.clock):
+            _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+            _, action, _ = run.run_once(self.cfg, self.client, sleeves, self.store)["1d"]
+        self.assertEqual(action, "BUY")
+
+
 class TestEnsemble(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

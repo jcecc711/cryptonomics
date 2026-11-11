@@ -16,7 +16,7 @@ import sys
 import time
 from decimal import Decimal
 
-from . import config, regime, strategy
+from . import config, notify, regime, strategy
 from .binanceus import BinanceUS
 from .broker import LiveBroker, PaperBroker
 from .execution import execute
@@ -177,7 +177,17 @@ def run_once(cfg, client, sleeves, store):
         log.info("[%s/%s] %s %s", s.name, s.mode, text, note)
     store.snapshot(ts, "total", total_cash, total_btc, price)
     store.set("last_run", {"time": ts, "sleeves": report})
+    notify.trade_alerts(cfg, results, price)
+    for s in sleeves:   # errors and kill-switch skips: alert when they start, not every hour
+        note = results[s.name][2] or ""
+        problem = note if note.startswith(("error:", "kill switch")) else None
+        notify.once_per_change(cfg, store, f"problem.{s.name}", problem, f"{s.name} sleeve: needs a look",
+                               problem or "", priority="high", tags=("warning",))
     if cache.get("regime"):
+        r = cache["regime"]
+        notify.once_per_change(cfg, store, "regime", r["call"], f"Market regime: {r['call']}",
+                               f"{r['phase']}, day {r['days_since_halving']} of the halving cycle. "
+                               f"BTC ${price:,.0f}", tags=("compass",))
         store.set("regime", cache["regime"])
         log.info("regime: %s (%s, day %s of the halving cycle)", cache["regime"]["call"],
                  cache["regime"]["phase"], cache["regime"]["days_since_halving"])
@@ -188,8 +198,12 @@ def loop(cfg, client, sleeves, store, every_sec=3600):
     while True:
         try:
             run_once(cfg, client, sleeves, store)
-        except Exception:
+            notify.once_per_change(cfg, store, "run", None, "", "")
+        except Exception as e:
             log.exception("run failed; will retry next cycle")
+            notify.once_per_change(cfg, store, "run", type(e).__name__, "Bot run failed",
+                                   f"{e}\nIt will retry every hour; check the server log.", priority="high",
+                                   tags=("warning",))
         time.sleep(every_sec - time.time() % every_sec + 300)  # 5 minutes past each hour
 
 
@@ -204,6 +218,15 @@ def main(argv=None):
         serve(cfg)
         return
     client, sleeves, store = make(cfg)
+    if cmd == "alert-test":
+        if not cfg.ntfy_topic:
+            import secrets
+            raise SystemExit("Set BOT_NTFY_TOPIC in .env first. A hard-to-guess topic you could use:\n"
+                             f"  BOT_NTFY_TOPIC=cryptonomics-{secrets.token_hex(6)}")
+        ok = notify.send(cfg, f"Cryptonomics test ({cfg.mode})", "Alerts are working. You'll get one for every "
+                         "trade, a regime change, or a problem.", tags=("white_check_mark",))
+        print("sent" if ok else "failed: see the log line above")
+        return
     if cmd == "status":
         last = store.get("last_run")
         if not last:

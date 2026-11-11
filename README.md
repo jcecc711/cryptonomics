@@ -51,6 +51,11 @@ markets. It gives up growth in strong bull runs.
 - **Starting mid-trend:** with `BOT_JOIN_OPEN_TREND=false` (default) the bot
   won't buy into a trend that is already running; it waits for the next fresh
   cross up.
+- **Phone alerts:** install the free ntfy app, subscribe to a hard-to-guess
+  topic, put it in `.env` as `BOT_NTFY_TOPIC`, and run `python -m bot.run alert-test`.
+  You get a notification for every buy and sell, a signal that didn't fill, a
+  sleeve error or kill-switch skip (once, not every hour), and a change in the
+  market-regime call.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
 - **Dashboard app:** overview (account vs. holding BTC, sleeves with DI gauges and
   candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and
