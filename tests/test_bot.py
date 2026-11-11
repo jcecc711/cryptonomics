@@ -20,7 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))  # bench uses flat imports
 from bench.exits import signals as bench_signals
 from bench.indicators import adx, ema
-from bot import run, stocks, strategy, web
+from bot import notify, run, stocks, strategy, web
 from bot.binanceus import BinanceError, Filters, sign
 from bot.broker import PaperBroker
 from bot.config import Config
@@ -504,6 +504,36 @@ class TestAlerts(TestRunOnce):
         warn = [s for s in self.sent if "needs a look" in s[1]]
         self.assertEqual(len(warn), 1)
         self.assertIn("kill switch", warn[0][2])
+
+    def test_email_alerts(self):
+        mails = []
+        class FakeSMTP:
+            def __init__(self, host, port, timeout):
+                self.calls = [("connect", host, port)]
+            def starttls(self):
+                self.calls.append("starttls")
+            def login(self, user, pw):
+                self.calls.append(("login", user, pw))
+            def send_message(self, msg):
+                mails.append((msg, self.calls))
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+        self.cfg.alert_email, self.cfg.smtp_user = "me@example.com", "bot@example.com"
+        self.assertEqual(notify.channels(self.cfg), [])            # no password yet: email is off
+        self.cfg.smtp_password = "app-password"
+        self.assertEqual(notify.channels(self.cfg), ["email"])
+        with unittest.mock.patch("bot.notify.smtplib.SMTP", FakeSMTP):
+            self.run_once()
+        self.assertFalse(getattr(self, "sent", []))                 # ntfy stays off without a topic
+        buy = [m for m, _ in mails if "BUY BTC - 1d DI cross (PAPER)" in m["Subject"]]
+        self.assertEqual(len(buy), 1, [m["Subject"] for m, _ in mails])
+        self.assertTrue(buy[0]["Subject"].startswith("[!] Cryptonomics:"))
+        self.assertEqual((buy[0]["To"], buy[0]["From"]), ("me@example.com", "bot@example.com"))
+        self.assertIn("bought", buy[0].get_content())
+        self.assertEqual(mails[0][1], [("connect", "smtp.gmail.com", 587), "starttls",
+                                       ("login", "bot@example.com", "app-password")])
 
     def test_failed_send_does_not_stop_the_bot(self):
         self.cfg.ntfy_topic = "cnx-test"

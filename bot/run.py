@@ -219,13 +219,15 @@ def main(argv=None):
         return
     client, sleeves, store = make(cfg)
     if cmd == "alert-test":
-        if not cfg.ntfy_topic:
+        on = notify.channels(cfg)
+        if not on:
             import secrets
-            raise SystemExit("Set BOT_NTFY_TOPIC in .env first. A hard-to-guess topic you could use:\n"
+            raise SystemExit("No alerts set up. In .env, set BOT_ALERT_EMAIL, BOT_SMTP_USER and "
+                             "BOT_SMTP_PASSWORD for email, and/or BOT_NTFY_TOPIC for the ntfy app, e.g.\n"
                              f"  BOT_NTFY_TOPIC=cryptonomics-{secrets.token_hex(6)}")
-        ok = notify.send(cfg, f"Cryptonomics test ({cfg.mode})", "Alerts are working. You'll get one for every "
+        ok = notify.send(cfg, f"test ({cfg.mode})", "Alerts are working. You'll get one for every "
                          "trade, a regime change, or a problem.", tags=("white_check_mark",))
-        print("sent" if ok else "failed: see the log line above")
+        print(f"sent via {', '.join(on)}" if ok else "failed: see the log line(s) above")
         return
     if cmd == "status":
         last = store.get("last_run")

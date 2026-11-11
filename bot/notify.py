@@ -1,21 +1,62 @@
-"""Phone alerts through ntfy (https://ntfy.sh): free, no account.
+"""Alerts by email and/or ntfy push notifications.
 
-Install the ntfy app on the phone, subscribe to a topic, and put the same topic
-in .env as BOT_NTFY_TOPIC. Anyone who knows the topic name can read the alerts,
-so use a long random one (python -m bot.run alert-test prints a suggestion).
-An alert that can't be sent is logged and never stops the bot.
+Email: BOT_ALERT_EMAIL plus an SMTP login (BOT_SMTP_USER / BOT_SMTP_PASSWORD;
+Gmail and Google Workspace by default, which need an app password).
+ntfy (https://ntfy.sh, free app, no account): BOT_NTFY_TOPIC. Anyone who knows
+the topic name can read those alerts, so use a long random one.
+Either channel can be on, or both. An alert that can't be sent is logged and
+never stops the bot.
 """
 import logging
+import smtplib
+from email.message import EmailMessage
 
 import requests
 
 log = logging.getLogger("bot")
 
 
+def channels(cfg):
+    out = []
+    if cfg.alert_email and cfg.smtp_user and cfg.smtp_password:
+        out.append("email")
+    if cfg.ntfy_topic:
+        out.append("ntfy")
+    return out
+
+
 def send(cfg, title, message, priority="default", tags=()):
-    """Send one alert; returns True if ntfy accepted it. No topic set: does nothing."""
-    if not cfg.ntfy_topic:
+    """Send one alert on every configured channel; True if any of them delivered it."""
+    ok = False
+    if "email" in channels(cfg):
+        ok |= _email(cfg, title, message, priority)
+    if "ntfy" in channels(cfg):
+        ok |= _ntfy(cfg, title, message, priority, tags)
+    return ok
+
+
+def _email(cfg, title, message, priority):
+    msg = EmailMessage()
+    msg["Subject"] = ("[!] " if priority == "high" else "") + "Cryptonomics: " + title
+    msg["From"] = cfg.smtp_user
+    msg["To"] = cfg.alert_email
+    msg.set_content(message + "\n\n-- your Cryptonomics bot")
+    try:
+        if cfg.smtp_port == 465:
+            server = smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, timeout=20)
+        else:
+            server = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=20)
+            server.starttls()
+        with server:
+            server.login(cfg.smtp_user, cfg.smtp_password)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        log.warning("email alert not sent: %s", e)
         return False
+
+
+def _ntfy(cfg, title, message, priority, tags):
     try:
         r = requests.post(f"{cfg.ntfy_server.rstrip('/')}/{cfg.ntfy_topic}", data=message.encode(), timeout=10,
                           headers={"Title": title.encode("ascii", "replace").decode(), "Priority": priority,
@@ -23,7 +64,7 @@ def send(cfg, title, message, priority="default", tags=()):
         r.raise_for_status()
         return True
     except Exception as e:
-        log.warning("alert not sent: %s", e)
+        log.warning("ntfy alert not sent: %s", e)
         return False
 
 

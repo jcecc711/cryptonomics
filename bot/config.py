@@ -79,6 +79,11 @@ class Config:
     dashboard_password: str = field(default="", repr=False)
     ntfy_topic: str = field(default="", repr=False)   # phone alerts; empty = off
     ntfy_server: str = "https://ntfy.sh"
+    alert_email: str = ""                              # email alerts go here; empty = off
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587                               # 587 = STARTTLS, 465 = SSL
+    smtp_user: str = ""
+    smtp_password: str = field(default="", repr=False)
 
     def sleeve_specs(self):
         """[(name, kind, timeframe)]; DI sleeves are named by timeframe, ADX ones 'adx-<tf>'."""
@@ -124,6 +129,11 @@ def load():
         dashboard_password=e("DASHBOARD_PASSWORD", ""),
         ntfy_topic=e("BOT_NTFY_TOPIC", ""),
         ntfy_server=e("BOT_NTFY_SERVER", "https://ntfy.sh"),
+        alert_email=e("BOT_ALERT_EMAIL", ""),
+        smtp_host=e("BOT_SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(e("BOT_SMTP_PORT", 587)),
+        smtp_user=e("BOT_SMTP_USER", ""),
+        smtp_password=e("BOT_SMTP_PASSWORD", ""),
     )
     if cfg.mode not in ("paper", "live"):
         raise SystemExit(f"BOT_MODE must be 'paper' or 'live', got {cfg.mode!r}")
