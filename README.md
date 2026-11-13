@@ -56,6 +56,12 @@ markets. It gives up growth in strong bull runs.
   topic). Test with `python -m bot.run alert-test`. You get an alert for every buy and sell, a signal that didn't fill, a
   sleeve error or kill-switch skip (once, not every hour), and a change in the
   market-regime call.
+- **Tracked shorts** (`BOT_SHORT_TRACKER=on`, default): records what a Coinbase
+  BTC futures short of `BOT_SHORT_CONTRACTS` x 0.01 BTC would do under the
+  "8h + 4h agree" rule (short while the 4h and 8h both have DI- on top, closed when
+  the 4h DI+ crosses back above DI-; `bench/mtf_switch.py`). No orders: it marks
+  the short every hour with estimated fees and funding, alerts on open / close,
+  and shows on the dashboard and in `status`.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
 - **Dashboard app:** overview (account vs. holding BTC, sleeves with DI gauges and
   candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and

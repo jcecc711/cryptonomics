@@ -79,6 +79,11 @@ class Config:
     dashboard_password: str = field(default="", repr=False)
     ntfy_topic: str = field(default="", repr=False)   # phone alerts; empty = off
     ntfy_server: str = "https://ntfy.sh"
+    # tracked (not placed) Coinbase futures shorts, "8h + 4h agree" rule; see bot/shorts.py
+    short_tracker: bool = True
+    short_contracts: int = 1                           # 0.01 BTC each
+    short_cost: float = 0.0006                         # fee + slippage per side, estimate
+    short_funding_apr: float = 0.10                    # holding cost per year, estimate
     alert_email: str = ""                              # email alerts go here; empty = off
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587                               # 587 = STARTTLS, 465 = SSL
@@ -129,6 +134,9 @@ def load():
         dashboard_password=e("DASHBOARD_PASSWORD", ""),
         ntfy_topic=e("BOT_NTFY_TOPIC", ""),
         ntfy_server=e("BOT_NTFY_SERVER", "https://ntfy.sh"),
+        short_tracker=e("BOT_SHORT_TRACKER", "on").lower() in ("on", "true", "1", "yes"),
+        short_contracts=int(e("BOT_SHORT_CONTRACTS", 1)),
+        short_funding_apr=float(e("BOT_SHORT_FUNDING_APR", 0.10)),
         alert_email=e("BOT_ALERT_EMAIL", ""),
         smtp_host=e("BOT_SMTP_HOST", "smtp.gmail.com"),
         smtp_port=int(e("BOT_SMTP_PORT", 587)),

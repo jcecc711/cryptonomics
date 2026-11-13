@@ -20,7 +20,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))  # bench uses flat imports
 from bench.exits import signals as bench_signals
 from bench.indicators import adx, ema
-from bot import notify, run, stocks, strategy, web
+from bot import notify, run, shorts, stocks, strategy, web
 from bot.binanceus import BinanceError, Filters, sign
 from bot.broker import PaperBroker
 from bot.config import Config
@@ -543,6 +543,85 @@ class TestAlerts(TestRunOnce):
             _, sleeves, _ = run.make(self.cfg, self.client, self.store)
             _, action, _ = run.run_once(self.cfg, self.client, sleeves, self.store)["1d"]
         self.assertEqual(action, "BUY")
+
+
+class TestShortTracker(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = make_cfg(self.tmp.name)
+        self.store = Store(self.cfg.db_path)
+        self.h4 = synthetic_candles(n=3000, seed=5, freq="4h", vol=0.012)
+        agg = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        self.h8 = self.h4.resample("8h").agg(agg).dropna()
+        d4, d8 = adx(self.h4, 38, 9), adx(self.h8, 38, 9)
+        self.dn4 = d4.di_minus > d4.di_plus
+        dn8 = d8.di_minus > d8.di_plus
+        dn8.index = dn8.index + pd.Timedelta("4h")
+        self.both = self.dn4 & dn8.reindex(self.h4.index, method="ffill").fillna(False).astype(bool)
+
+    def tearDown(self):
+        self.store.db.close()
+        self.tmp.cleanup()
+
+    def step(self, t):
+        c4 = self.h4.loc[:t]
+        c8 = self.h8[self.h8.index + pd.Timedelta("8h") <= t + pd.Timedelta("4h")]   # closed 8h candles only
+        price = float(c4.close.iloc[-1])
+        return shorts.step(self.cfg, self.store, c4, c8, price, str(t + pd.Timedelta("4h")))
+
+    def test_picks_up_an_open_short_then_closes_on_the_4h_turn(self):
+        b = self.both.iloc[200:]
+        starts = b & ~b.shift(fill_value=False)
+        start = starts[starts].index[3]
+        later = b.loc[start:]
+        t = later.index[min(5, (~later).argmax() - 1)]             # a few candles into the streak
+        event, st = self.step(t)
+        self.assertEqual(event, "open")
+        pos = st["open"]
+        self.assertTrue(pos["picked_up"])
+        nxt = self.h4.index[self.h4.index.get_loc(start) + 1]
+        self.assertEqual((pd.Timestamp(pos["opened"]), pos["entry"], pos["qty"]),
+                         (nxt, float(self.h4.open.loc[nxt]), 0.01))
+        # stays short until the 4h DI+ crosses back above DI-
+        up_after = self.dn4.loc[t:]
+        t_up = up_after[~up_after].index[0]
+        for tt in self.h4.loc[t:t_up].index[1:-1]:
+            self.assertIsNone(self.step(tt)[0])
+        event, st = self.step(t_up)
+        self.assertEqual(event, "close")
+        c = st["closed"][0]
+        exit_px = float(self.h4.close.loc[t_up])
+        self.assertAlmostEqual(c["gross"], 0.01 * (c["entry"] - exit_px), places=2)
+        self.assertLess(c["net"], c["gross"])                         # fees and funding come off
+        self.assertIsNone(st["open"])
+        self.assertEqual(st["realized"], c["net"])
+
+    def test_new_short_after_the_first_run_opens_at_the_live_price(self):
+        first_up = self.both[~self.both].index[300]
+        self.assertIsNone(self.step(first_up)[0])
+        b = self.both.loc[first_up:]
+        t = b[b].index[0]
+        event, st = self.step(t)
+        self.assertEqual(event, "open")
+        self.assertFalse(st["open"]["picked_up"])
+        self.assertEqual(st["open"]["entry"], float(self.h4.close.loc[t]))
+
+    def test_run_once_tracks_and_alerts(self):
+        b = self.both.iloc[300:]
+        t = b[b].index[2]
+        cfg = make_cfg(self.tmp.name, timeframes=("1d",), alert_email="me@example.com",
+                       smtp_user="bot@example.com", smtp_password="x")
+        candles = {"4h": self.h4.loc[:t], "8h": self.h8[self.h8.index + pd.Timedelta("8h") <= t + pd.Timedelta("4h")],
+                   "1d": self.h4.loc[:t].resample("1D").agg({"open": "first", "high": "max", "low": "min",
+                                                              "close": "last", "volume": "sum"}).dropna()}
+        sent = []
+        with unittest.mock.patch("bot.notify.send", lambda cfg, title, msg, *a, **k: sent.append(title)):
+            _, sleeves, _ = run.make(cfg, FakeClient(candles=candles), self.store)
+            run.run_once(cfg, FakeClient(candles=candles), sleeves, self.store)
+        st = self.store.get("short_tracker")
+        self.assertIsNotNone(st["open"])
+        self.assertTrue(any(s.startswith("SHORT 0.01 BTC (tracked, not placed)") for s in sent), sent)
+        self.assertEqual(self.store.rows("SELECT * FROM orders"), [])     # nothing is ever placed
 
 
 class TestEnsemble(unittest.TestCase):

@@ -236,6 +236,7 @@ def status(cfg, store, lock):
             "mode": cfg.mode, "symbol": cfg.symbol, "di_len": cfg.di_len,
             "kill_switch": cfg.stop_file.exists(),
             "last_run": store.get("last_run"),
+            "short_tracker": store.get("short_tracker") if cfg.short_tracker else None,
             "sleeves": sleeves,
             "equity": total[-2000:],
             "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),

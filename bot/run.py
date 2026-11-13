@@ -16,7 +16,7 @@ import sys
 import time
 from decimal import Decimal
 
-from . import config, notify, regime, strategy
+from . import config, notify, regime, shorts, strategy
 from .binanceus import BinanceUS
 from .broker import LiveBroker, PaperBroker
 from .execution import execute
@@ -178,6 +178,11 @@ def run_once(cfg, client, sleeves, store):
     store.snapshot(ts, "total", total_cash, total_btc, price)
     store.set("last_run", {"time": ts, "sleeves": report})
     notify.trade_alerts(cfg, results, price)
+    if cfg.short_tracker:
+        try:
+            track_short(cfg, client, store, cache, price, ts)
+        except Exception:
+            log.exception("short tracker failed this run")
     for s in sleeves:   # errors and kill-switch skips: alert when they start, not every hour
         note = results[s.name][2] or ""
         problem = note if note.startswith(("error:", "kill switch")) else None
@@ -192,6 +197,33 @@ def run_once(cfg, client, sleeves, store):
         log.info("regime: %s (%s, day %s of the halving cycle)", cache["regime"]["call"],
                  cache["regime"]["phase"], cache["regime"]["days_since_halving"])
     return results
+
+
+def track_short(cfg, client, store, cache, price, ts):
+    for tf in ("4h", "8h"):
+        if ("candles", tf) not in cache:
+            cache[("candles", tf)] = client.klines(cfg.symbol, tf)
+    event, st = shorts.step(cfg, store, cache[("candles", "4h")], cache[("candles", "8h")], price, ts)
+    pos = st["open"]
+    if pos:
+        m = pos["mark"]
+        log.info("tracked short: %s contract(s) = %s BTC from %s at %.2f, now %.2f, P/L %+.2f (est.)",
+                 pos["contracts"], pos["qty"], pos["opened"], pos["entry"], price, m["net"])
+    else:
+        log.info("tracked short: none (4h %s, 8h %s)", st["signal"]["4h"], st["signal"]["8h"])
+    if event == "open":
+        when = f"picked up from {pos['opened']} UTC" if pos["picked_up"] else "now"
+        notify.send(cfg, f"SHORT {pos['qty']} BTC (tracked, not placed)",
+                    f"8h and 4h both have DI- on top. A Coinbase short of {pos['contracts']} contract(s) "
+                    f"= {pos['qty']} BTC at ${pos['entry']:,.0f} ({when}).\nCloses when 4h DI+ crosses back above DI-."
+                    f"\nBTC ${price:,.0f}", priority="high", tags=("chart_with_downwards_trend",))
+    elif event == "close":
+        t = st["closed"][0]
+        notify.send(cfg, f"COVER short: {'+' if t['net'] >= 0 else '-'}${abs(t['net']):,.2f} (tracked, not placed)",
+                    f"4h DI+ crossed back above DI-. Short of {t['qty']} BTC from ${t['entry']:,.0f} closed at "
+                    f"${t['exit']:,.0f} after {t['days']:.1f} days: {t['pct']:+.1f}% on the short, "
+                    f"net ${t['net']:+,.2f} after estimated fees and funding.", priority="high",
+                    tags=("chart_with_upwards_trend",))
 
 
 def loop(cfg, client, sleeves, store, every_sec=3600):
@@ -237,6 +269,16 @@ def main(argv=None):
             print(f"[{name} {r['mode']} {r['share']:.0%}] {r['summary']}")
         for s in sleeves:
             print(f"{s.name}: cash {s.cash:.2f}, BTC {s.btc}")
+        st = store.get(shorts.KEY)
+        if st:
+            pos = st["open"]
+            if pos:
+                m = pos["mark"]
+                print(f"tracked short (not placed): {pos['qty']} BTC from {pos['opened']} at {pos['entry']:,.2f}, "
+                      f"BTC {st['price']:,.2f}, P/L {m['net']:+,.2f} est. ({m['pct']:+.1f}%)")
+            else:
+                print(f"tracked short: none (4h {st['signal']['4h']}, 8h {st['signal']['8h']})")
+            print(f"tracked shorts closed: {len(st['closed'])}, realized {st['realized']:+,.2f} est.")
         return
 
     lock = open(cfg.data_dir / "bot.lock", "w")

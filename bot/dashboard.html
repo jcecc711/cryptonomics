@@ -208,6 +208,8 @@ td.num, th.num { text-align: right; }
 .coin .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 11px; flex: none; }
 .coin small { color: var(--muted); }
 .tag { font-size: 10.5px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: var(--g1); color: #fff; }
+.sh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+.sh-grid b { font-size: 15px; }
 .tag.stock { background: var(--chip); color: var(--muted); }
 .coin .av.sq { border-radius: 8px; }
 .tfdots { display: flex; gap: 4px; }
@@ -334,6 +336,12 @@ td.num, th.num { text-align: right; }
         <div class="phead"><h2><span class="ic" style="background:var(--g3)"><svg><use href="#i-target"/></svg></span>Market regime</h2>
           <div class="act"><span class="muted" id="reg-asof"></span></div></div>
         <div class="regime" id="regime"><div class="empty"><span class="spin"></span></div></div>
+      </div>
+      <div class="panel" style="margin-bottom:16px" id="sh-panel" hidden>
+        <div class="phead"><h2><span class="ic" style="background:var(--g4)"><svg><use href="#i-trend"/></svg></span>Tracked short <span class="tag stock">NOT PLACED</span></h2>
+          <div class="act"><span class="muted" id="sh-asof"></span></div></div>
+        <div id="shorts"></div>
+        <p class="note">What a Coinbase BTC futures short (0.01 BTC contracts) would be doing under the "8h + 4h agree" rule: short while the 4h and 8h both have DI- on top, closed when the 4h DI+ crosses back above DI-. No orders are placed; fees and funding are estimates.</p>
       </div>
       <div class="sleeves" id="sleeves"></div>
       <div class="grid2">
@@ -540,9 +548,37 @@ async function refresh() {
   $("#side-mode").innerHTML = `<span class="badge ${s.mode === "live" ? "b-live" : "b-paper"}">${s.mode.toUpperCase()} TRADING</span>`;
   $("#kill").hidden = !s.kill_switch;
   $("#side-run").textContent = s.last_run ? "Last run " + new Date(toSec(s.last_run.time) * 1000).toLocaleString() : "Not run yet";
-  renderRegime(); renderOverview(); renderTrades(); renderActivity(); renderSettings();
+  renderRegime(); renderShorts(); renderOverview(); renderTrades(); renderActivity(); renderSettings();
   Equity.update(); Charts.markers();
   notifyNew(prev, s);
+}
+
+function renderShorts() {
+  const st = S.status && S.status.short_tracker, panel = $("#sh-panel");
+  panel.hidden = !st; if (!st) return;
+  const s = st.signal, pos = st.open, d = x => x ? new Date(x.replace(" ", "T") + "Z").toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "–";
+  const sgn = x => (x >= 0 ? "+" : "−") + usd(Math.abs(x), 2);
+  $("#sh-asof").textContent = "updated " + d(st.updated);
+  const tfs = `<div class="tfdots"><span class="${s["4h"] === "up" ? "u" : "d"}" title="DI+ ${s.di_plus_4h} / DI- ${s.di_minus_4h}, ADX ${s.adx_4h}">4h ${s["4h"] === "up" ? "▲" : "▼"}</span><span class="${s["8h"] === "up" ? "u" : "d"}" title="DI+ ${s.di_plus_8h} / DI- ${s.di_minus_8h}">8h ${s["8h"] === "up" ? "▲" : "▼"}</span></div>`;
+  let html;
+  if (pos) {
+    const m = pos.mark;
+    html = `<div class="sh-grid">
+      <div><div class="muted">Position</div><b class="bad">SHORT ${pos.qty} BTC</b><div class="muted">${pos.contracts} contract${pos.contracts > 1 ? "s" : ""}</div></div>
+      <div><div class="muted">Opened</div><b>${d(pos.opened)}</b><div class="muted">at ${price(pos.entry)}${pos.picked_up ? " · picked up" : ""}</div></div>
+      <div><div class="muted">BTC now</div><b>${price(st.price)}</b><div class="${cls(m.pct)}">${m.pct >= 0 ? "−" : "+"}${Math.abs(m.pct).toFixed(1)}% since entry</div></div>
+      <div><div class="muted">Profit / loss (est.)</div><b class="${cls(m.net)}" style="font-size:20px">${sgn(m.net)}</b><div class="muted">${sgn(m.gross)} move, −${usd(m.fees + m.funding, 2)} costs, ${m.days.toFixed(1)} days</div></div>
+      <div><div class="muted">Closes when</div><b>4h DI+ crosses above DI-</b><div class="muted">now DI+ ${s.di_plus_4h} / DI- ${s.di_minus_4h}</div></div></div>`;
+  } else {
+    html = `<div class="sh-grid"><div><div class="muted">Position</div><b>No short</b><div class="muted">Opens when the 4h and 8h both have DI- on top</div></div>
+      <div><div class="muted">Now</div>${tfs}</div><div><div class="muted">BTC now</div><b>${price(st.price)}</b></div></div>`;
+  }
+  if (st.closed.length) {
+    html += `<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Opened</th><th>Closed</th><th class="num">Entry</th><th class="num">Exit</th><th class="num">Days</th><th class="num">Net (est.)</th></tr></thead><tbody>` +
+      st.closed.slice(0, 10).map(c => `<tr><td>${d(c.opened)}</td><td>${d(c.closed)}</td><td class="num">${price(c.entry)}</td><td class="num">${price(c.exit)}</td><td class="num">${c.days.toFixed(1)}</td><td class="num ${cls(c.net)}">${sgn(c.net)}</td></tr>`).join("") +
+      `</tbody></table></div><div class="muted" style="margin-top:6px">Closed shorts: ${st.closed.length}, total ${sgn(st.realized)} (est.)</div>`;
+  }
+  $("#shorts").innerHTML = html;
 }
 
 function renderRegime() {
