@@ -15,7 +15,7 @@ rebalanced. Costs: longs 0.02% fee + 0.01% slippage per side; shorts would need
 US futures: 0.05% + 0.01% per side on the short's size, plus a 10%/yr holding
 cost on it (funding / basis).
 
-    python bench/short_hedge.py
+    python bench/short_hedge.py [--no-bear-filter]
 """
 import numpy as np
 import pandas as pd
@@ -138,13 +138,14 @@ def stats(eq, a, b):
     return 100 * (w.iloc[-1] - 1), 100 * (w.iloc[-1] ** (1 / yrs) - 1) if yrs >= 1 else np.nan, 100 * dd
 
 
-def main():
+def main(bear_filter=True):
     h1 = hourly()
+    print("bear filter:", "ON (no longs on days 540-910 after a halving)" if bear_filter else "OFF (pure trend switching)")
     print(f"candles to {h1.index[-1]}, BTC ${h1.close.iloc[-1]:,.0f}")
     curves, trades = {}, {}
     for tf, rule in TFS.items():
         df = resample(h1, rule).loc["2015-06-01":]
-        bear = np.array([calendar_bear(t) for t in df.index.normalize()])
+        bear = np.array([bear_filter and calendar_bear(t) for t in df.index.normalize()])
         for kind in ("di", "adx"):
             pos = sleeve_positions(df, kind, bear)
             w = df.loc["2016-01-01":]
@@ -203,4 +204,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(bear_filter="--no-bear-filter" not in sys.argv)
