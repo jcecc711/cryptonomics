@@ -925,6 +925,22 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(self.get(url + "/api/price?symbol=AAPL")["symbol"], "AAPL")
         self.post(url + "/api/watchlist", {"symbols": []}, expect=400)
 
+    def test_cash_since_for_buying_power(self):
+        cfg = make_cfg(self.tmp.name, timeframes=("4h", "1d"))
+        store = Store(cfg.db_path)
+        self.addCleanup(store.db.close)
+        store.snapshot("2026-11-05 16:05:00", "4h", 1250, 0, 76000)
+        store.snapshot("2026-11-05 16:05:00", "1d", 1250, 0, 76000)
+        store.open_trade("4h", 80000, 0.015, 1200)
+        store.close_trade("4h", 70000, 1050)
+        store.snapshot("2026-11-16 20:05:00", "4h", 1100, 0, 65000)
+        s = {x["name"]: x for x in web.status(cfg, store, threading.Lock())["sleeves"]}
+        self.assertEqual((s["4h"]["cash_since"]["price"], s["4h"]["cash_since"]["how"]), (70000, "sold"))
+        self.assertEqual(s["1d"]["cash_since"], {"time": "2026-11-05 16:05:00", "price": 76000, "how": "started"})
+        store.open_trade("1d", 65000, 0.019, 1250)
+        s = {x["name"]: x for x in web.status(cfg, store, threading.Lock())["sleeves"]}
+        self.assertIsNone(s["1d"]["cash_since"])                  # holding BTC: no buying-power reference
+
     def test_price(self):
         url = self.serve()
         self.assertEqual(self.get(url + "/api/price?symbol=ETHUSDT")["price"], 100.0)

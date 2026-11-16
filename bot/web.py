@@ -224,9 +224,19 @@ def status(cfg, store, lock):
         sleeves, specs = [], cfg.sleeve_specs()
         for name, kind, tf in specs:
             eq = store.rows("SELECT ts, value, cash, btc, price FROM equity WHERE strategy=? ORDER BY ts", name)
+            trade = store.current_trade(name)
+            since = None   # when this sleeve's cash went to cash, and the BTC price then
+            if not trade:
+                sold = store.rows("SELECT exit_time, exit_price FROM trades WHERE strategy=? AND exit_time IS NOT NULL"
+                                  " ORDER BY id DESC LIMIT 1", name)
+                if sold:
+                    since = {"time": sold[0]["exit_time"], "price": sold[0]["exit_price"], "how": "sold"}
+                elif eq:
+                    since = {"time": eq[0]["ts"], "price": eq[0]["price"], "how": "started"}
             sleeves.append({
+                "cash_since": since,
                 "name": name, "kind": kind, "tf": tf, "share": 1 / len(specs),
-                "trade": store.current_trade(name),
+                "trade": trade,
                 "last": eq[-1] if eq else None, "start_value": eq[0]["value"] if eq else None,
                 "signals": store.rows("SELECT * FROM signals WHERE strategy=? ORDER BY candle_time DESC LIMIT 20",
                                       name),

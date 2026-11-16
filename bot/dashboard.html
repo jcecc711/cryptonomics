@@ -208,6 +208,10 @@ td.num, th.num { text-align: right; }
 .coin .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 11px; flex: none; }
 .coin small { color: var(--muted); }
 .tag { font-size: 10.5px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: var(--g1); color: #fff; }
+.bp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 14px 18px; margin-bottom: 16px;
+  border-radius: 14px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.bp .big { font-size: 20px; font-weight: 800; }
+.bp .lab { font-weight: 700; }
 .sh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 .sh-grid b { font-size: 15px; }
 .tag.stock { background: var(--chip); color: var(--muted); }
@@ -332,6 +336,7 @@ td.num, th.num { text-align: right; }
         <div class="kpi" style="background:var(--g3)"><div class="k">In BTC right now</div><div class="v" id="k-exp">–</div><div class="s" id="k-exp-s">&nbsp;</div><svg class="bgicon"><use href="#i-pie"/></svg></div>
         <div class="kpi" style="background:var(--g4)"><div class="k">Closed trades</div><div class="v" id="k-trades">–</div><div class="s" id="k-trades-s">&nbsp;</div><svg class="bgicon"><use href="#i-target"/></svg></div>
       </div>
+      <div class="bp" id="bp" hidden></div>
       <div class="panel" style="margin-bottom:16px">
         <div class="phead"><h2><span class="ic" style="background:var(--g3)"><svg><use href="#i-target"/></svg></span>Market regime</h2>
           <div class="act"><span class="muted" id="reg-asof"></span></div></div>
@@ -621,6 +626,21 @@ function sleeveState(sl) {
     : up ? (sl.kind === "adx" ? [`Waiting: ADX ↑ ${r.level ?? 14}`, "wait"] : ["Waiting: fresh cross", "wait"]) : ["In cash", ""];
   return {sig, r, up, st};
 }
+function renderBuyingPower(s, px) {
+  // BTC the sleeves' cash buys now vs. at the price when each went to cash
+  const box = $("#bp"), rows = s.sleeves.filter(sl => !sl.trade && sl.cash_since && sl.last && sl.last.cash > 1 && sl.cash_since.price);
+  if (!rows.length || !px) { box.hidden = true; return; }
+  const cash = rows.reduce((a, sl) => a + sl.last.cash, 0);
+  const then = rows.reduce((a, sl) => a + sl.last.cash / sl.cash_since.price, 0), now = cash / px, ch = now / then - 1;
+  const ref = cash / then, early = rows.map(sl => sl.cash_since.time).sort()[0];
+  const tip = rows.map(sl => `${sl.name}: ${sl.cash_since.how === "sold" ? "sold" : "in cash since start"} at ${price(sl.cash_since.price)} (${sl.cash_since.time.slice(0, 10)})`).join("\n");
+  box.hidden = false;
+  box.innerHTML = `<span class="lab">Buying power</span>
+    <span>Your <b>${usd(cash)}</b> in cash buys <span class="big">${now.toFixed(4)} BTC</span> now</span>
+    <span class="muted">vs ${then.toFixed(4)} BTC when it went to cash (BTC ${price(ref)}${rows.length > 1 ? " avg" : ""}, since ${new Date(toSec(early) * 1000).toLocaleDateString()})</span>
+    <span class="big ${cls(ch)}" title="${esc(tip)}">${ch >= 0 ? "+" : ""}${(100 * ch).toFixed(1)}% ${ch >= 0 ? "more" : "less"} BTC</span>`;
+}
+
 function renderOverview() {
   const s = S.status; if (!s) return;
   const px = live.price || (s.equity.at(-1) || {}).price;
@@ -641,6 +661,7 @@ function renderOverview() {
     $("#k-exp").textContent = total ? Math.round(100 * inBtc / total) + "%" : "–";
     $("#k-exp-s").textContent = `${s.sleeves.filter(x => x.trade).length} of ${s.sleeves.length} sleeves · open P/L ${usd(openPl)}`;
   }
+  renderBuyingPower(s, px);
   const closed = s.trades.filter(t => t.exit_time);
   const wins = closed.filter(t => t.ret > 0).length;
   $("#k-trades").textContent = closed.length;
