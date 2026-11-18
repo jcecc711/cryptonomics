@@ -37,7 +37,7 @@ markets. It gives up growth in strong bull runs.
     python -m bot.run loop          # keep running: 5 minutes past every hour
     python -m bot.run web           # dashboard app at http://127.0.0.1:8080
     python -m bot.run status
-    python -m bot.run manual-buy 2000     # practice only: buy $2,000 of BTC by hand
+    python -m bot.run manual-buy 2000     # practice only: buy $2,000 of BTC by hand ("all" = all the cash)
     python -m bot.run manual-sell         # sell the manual position, cash goes back to the sleeves
 
 - **Paper mode** (default) simulates orders against the live Binance.US order

@@ -156,8 +156,11 @@ def manual_buy(cfg, client, sleeves, store, usd):
     if cfg.mode != "paper":
         raise SystemExit("Manual buys are for the practice account only (BOT_MODE=paper).")
     fund(sleeves)
-    usd = Decimal(str(usd)).quantize(Decimal("0.01"))
     rule = [s for s in sleeves if s.kind != MANUAL]
+    if str(usd).lower() == "all":   # every sleeve's cash
+        usd = sum((s.cash for s in rule if not store.current_trade(s.name)), Decimal(0))
+        usd = usd.quantize(Decimal("0.01"), rounding="ROUND_DOWN")
+    usd = Decimal(str(usd)).quantize(Decimal("0.01"))
     if store.current_trade(MANUAL):
         raise SystemExit("There's already a manual position. Sell it first: python -m bot.run manual-sell")
     lenders = [s for s in rule if not store.current_trade(s.name) and s.cash > 0]
@@ -372,7 +375,7 @@ def main(argv=None):
             client, sleeves, store = make(cfg, client, store)   # fresh view inside the lock
             if cmd == "manual-buy":
                 if len(argv) < 2:
-                    raise SystemExit("Usage: python -m bot.run manual-buy <dollars>, e.g. manual-buy 2000")
+                    raise SystemExit("Usage: python -m bot.run manual-buy <dollars | all>, e.g. manual-buy 2000")
                 note = manual_buy(cfg, client, sleeves, store, argv[1].replace("$", "").replace(",", ""))
                 t = store.current_trade(MANUAL)
                 notify.send(cfg, f"Manual BUY ({cfg.mode.upper()})", note, priority="high", tags=("hand",))

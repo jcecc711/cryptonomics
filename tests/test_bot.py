@@ -683,6 +683,15 @@ class TestManualPosition(unittest.TestCase):
         self.assertFalse(any(s.kind == "manual" for s in sleeves))
         self.assertEqual([r["strategy"] for r in self.store.rows("SELECT strategy FROM trades")], ["manual"])
 
+    def test_buy_all(self):
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)
+        with FakeTime(self.clock):
+            run.manual_buy(self.cfg, self.client, sleeves, self.store, "all")
+        self.assertEqual(self.store.get("manual.from"), {"1d": 500.0, "adx-1d": 500.0})
+        self.assertTrue(all(float(s.cash) == 0 for s in sleeves if s.kind != "manual"))
+        self.assertGreater(self.store.current_trade("manual")["qty"], 9.9)    # ~1000 / 100
+
     def test_limits(self):
         _, sleeves, _ = run.make(self.cfg, self.client, self.store)
         self.run_once(sleeves)
