@@ -61,6 +61,7 @@ main { min-width: 0; padding: 20px 24px 64px; }
   background: var(--panel); cursor: pointer; color: var(--muted); }
 .iconbtn:hover { color: var(--text); }
 .iconbtn svg { width: 18px; height: 18px; }
+.iconbtn.spinning svg { animation: sp .8s linear infinite; }
 .iconbtn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 .badge { font-size: 11.5px; font-weight: 700; letter-spacing: .04em; padding: 4px 9px; border-radius: 999px; }
 .b-paper { background: color-mix(in srgb, #3b82f6 14%, transparent); color: #3b82f6; }
@@ -341,6 +342,7 @@ td.num, th.num { text-align: right; }
         <div class="ticker" title="Live BTC price (Binance.US)"><span class="muted">BTC</span><b id="tk-price">–</b><span id="tk-chg"></span></div>
         <button class="iconbtn" id="bell" title="Trade alerts" aria-pressed="false"><svg><use href="#i-bell"/></svg></button>
         <button class="iconbtn" id="theme" title="Switch theme"><svg><use href="#i-moon"/></svg></button>
+        <button class="iconbtn" id="reload" title="Refresh" aria-label="Refresh"><svg><use href="#i-refresh"/></svg></button>
       </div>
     </header>
 
@@ -1463,6 +1465,8 @@ const Watch = (() => {
   setInterval(() => { if (view === "watchlist") load(true); }, 60000);
   return {load};
 })();
+
+$("#reload").onclick = () => { $("#reload").classList.add("spinning"); location.reload(); };   // home-screen apps have no reload button
 
 /* ---------------- boot ---------------- */
 applyTheme(); renderBell();
