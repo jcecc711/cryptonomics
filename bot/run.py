@@ -16,7 +16,7 @@ import sys
 import time
 from decimal import Decimal
 
-from . import config, notify, regime, shorts, strategy
+from . import clients, config, notify, regime, shorts, strategy
 from .binanceus import BinanceUS
 from .broker import LiveBroker, PaperBroker
 from .execution import execute
@@ -364,6 +364,7 @@ def loop(cfg, client, sleeves, store, every_sec=3600):
         try:
             run_once(cfg, client, sleeves, store)
             notify.once_per_change(cfg, store, "run", None, "", "")
+            clients.run_all(cfg, client, make, run_once)
         except Exception as e:
             log.exception("run failed; will retry next cycle")
             notify.once_per_change(cfg, store, "run", type(e).__name__, "Bot run failed",
@@ -393,6 +394,35 @@ def main(argv=None):
         ok = notify.send(cfg, f"test ({cfg.mode})", "Alerts are working. You'll get one for every "
                          "trade, a regime change, or a problem.", tags=("white_check_mark",))
         print(f"sent via {', '.join(on)}" if ok else "failed: see the log line(s) above")
+        return
+    if cmd == "client-add":
+        if len(argv) < 3:
+            raise SystemExit('Usage: python -m bot.run client-add "Full Name" <starting dollars>')
+        c, password = clients.add(cfg, argv[1], argv[2].replace("$", "").replace(",", ""))
+        print(f"Added {c['name']} with ${c['start_usd']:,.0f} (paper). Their portal login:\n"
+              f"  username: {c['id']}\n  password: {password}\n"
+              "The password is shown only now; reset it with: python -m bot.run client-password " + c["id"])
+        return
+    if cmd == "client-password":
+        if len(argv) < 2:
+            raise SystemExit("Usage: python -m bot.run client-password <client id>")
+        cl = clients.load(cfg)
+        c = next((x for x in cl if x["id"] == argv[1]), None)
+        if not c:
+            raise SystemExit(f"No client {argv[1]!r}. See: python -m bot.run client-list")
+        password = clients.set_password(c)
+        clients.save(cfg, cl)
+        print(f"New password for {c['id']}: {password}")
+        return
+    if cmd == "client-list":
+        cl = clients.load(cfg)
+        if not cl:
+            print("No clients yet. Add one: python -m bot.run client-add \"Full Name\" 250000")
+        bid, ask = client.book(cfg.symbol)
+        for c in cl:
+            r = clients.report(cfg, c, float((bid + ask) / 2))
+            print(f"{c['id']:24} {c['name']:24} start ${r['start_usd']:>12,.0f}  now ${r['value']:>12,.2f}  "
+                  f"{100 * r['ret']:+6.2f}%  in BTC {100 * r['in_btc']:.0f}%  since {r['inception']}")
         return
     if cmd == "manual-stop":
         if len(argv) < 2:
@@ -451,6 +481,7 @@ def main(argv=None):
         raise SystemExit("Another bot process is already running")
     if cmd == "once":
         run_once(cfg, client, sleeves, store)
+        clients.run_all(cfg, client, make, run_once)
     elif cmd == "loop":
         loop(cfg, client, sleeves, store)
     else:

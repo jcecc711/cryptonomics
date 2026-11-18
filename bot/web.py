@@ -13,10 +13,17 @@ Endpoints (all behind DASHBOARD_PASSWORD when set, any username):
     POST /api/watchlist         {"symbols": [...]} replace the list; a coin pair (SOLUSDT) or a
                                 US stock ticker (AAPL), checked against Binance.US / Yahoo
     GET  /api/symbols           coins tradable on Binance.US (USDT / USD / USDC quotes)
+    GET  /portal                the investor portal (clients see it at /; admin adds ?client=<id>)
+    GET  /api/me                a client's own account report (admin: ?client=<id>)
+    GET  /statement             ?month=YYYY-MM printable monthly statement (admin: &client=<id>)
+    GET  /api/clients           admin: every client account with its value and gain
     GET  /api/portfolio         ?symbol=BTCUSDT  gains / losses by period (1W, 1M, YTD, each year
                                 to 2020): the practice account, the rules simulated on history, holding
 
 Anything that isn't a Binance.US pair is treated as a US stock ticker (see stocks.py).
+
+Logins: the admin uses DASHBOARD_PASSWORD (any username). A client logs in with their
+client id and own password and can only reach the portal, their report and statements.
 
 Keep the default 127.0.0.1 binding unless it sits behind a password and a
 private network (Tailscale) or HTTPS.
@@ -33,6 +40,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bench.indicators import adx, ema, rma, sma
 
+from . import clients as clients_mod
 from . import portfolio as portfolio_mod
 from . import regime as regime_mod
 from . import stocks
@@ -40,6 +48,7 @@ from .binanceus import BinanceUS
 from .store import Store
 
 PAGE = Path(__file__).with_name("dashboard.html")
+PORTAL = Path(__file__).with_name("portal.html")
 DEFAULT_WATCHLIST = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT",
                      "AVAXUSDT", "LINKUSDT", "LTCUSDT", "DOTUSDT"]
 ANALYSIS_TFS = ("4h", "8h", "12h", "1d")
@@ -294,16 +303,53 @@ def make_handler(cfg, store, client):
 
     class Handler(BaseHTTPRequestHandler):
         def _authorized(self):
-            if not cfg.dashboard_password:
-                return True
+            """Sets self.role: "client" (with self.client_rec) or "admin"."""
+            self.role, self.client_rec = None, None
+            user = pw = ""
             h = self.headers.get("Authorization", "")
             if h.startswith("Basic "):
                 try:
-                    pw = base64.b64decode(h[6:]).decode().split(":", 1)[1]
+                    user, pw = base64.b64decode(h[6:]).decode().split(":", 1)
                 except Exception:
                     return False
-                return hmac.compare_digest(pw, cfg.dashboard_password)
+            if user:
+                c = clients_mod.get(cfg, user)
+                if c and clients_mod.check_password(c, pw):
+                    self.role, self.client_rec = "client", c
+                    return True
+            if not cfg.dashboard_password or (pw and hmac.compare_digest(pw, cfg.dashboard_password)):
+                self.role = "admin"
+                return True
             return False
+
+        def _mid(self):
+            def load():
+                bid, ask = client.book(cfg.symbol)
+                return float((bid + ask) / 2)
+            return _cache.get(("mid", cfg.symbol), 15, load)
+
+        def _client_for(self, q):
+            """The client a request is about: a client's own account, or ?client= for the admin."""
+            if self.role == "client":
+                return self.client_rec
+            c = clients_mod.get(cfg, (q.get("client") or [""])[0])
+            if not c:
+                raise ValueError("unknown client")
+            return c
+
+        def _portal_routes(self, path, q):
+            """Routes a client may use (the admin may use them for any client). None: not one of them."""
+            if path in ("/", "/index.html", "/portal") and (self.role == "client" or path == "/portal"):
+                self._send(200, PORTAL.read_bytes(), "text/html; charset=utf-8")
+            elif path == "/api/me":
+                self._send(200, clients_mod.report(cfg, self._client_for(q), self._mid()))
+            elif path == "/statement":
+                rep = clients_mod.report(cfg, self._client_for(q), self._mid())
+                month = (q.get("month") or [rep["months"][0]["month"]])[0]
+                self._send(200, clients_mod.statement(rep, month).encode(), "text/html; charset=utf-8")
+            else:
+                return None
+            return True                              # handled
 
         def _send(self, code, body, ctype="application/json"):
             if not isinstance(body, bytes):
@@ -336,6 +382,13 @@ def make_handler(cfg, store, client):
             url = urlparse(self.path)
             q = parse_qs(url.query)
             try:
+                if self._portal_routes(url.path, q) is not None:
+                    return
+                if self.role == "client":           # clients see only their own portal
+                    return self._send(403, {"error": "not available"})
+                if url.path == "/api/clients":
+                    mid = self._mid()
+                    return self._send(200, {"clients": [clients_mod.report(cfg, c, mid) for c in clients_mod.load(cfg)]})
                 if url.path in ("/", "/index.html"):
                     return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
                 if url.path == "/api/status":
@@ -379,6 +432,8 @@ def make_handler(cfg, store, client):
         def do_POST(self):
             if not self._authorized():
                 return self._deny()
+            if self.role != "admin":
+                return self._send(403, {"error": "not available"})
             if urlparse(self.path).path != "/api/watchlist":
                 return self._send(404, {"error": "not found"})
             try:

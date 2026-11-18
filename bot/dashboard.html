@@ -133,6 +133,7 @@ main { min-width: 0; padding: 20px 24px 64px; }
   background: var(--panel); cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .btn:hover { border-color: var(--muted); }
 .btn svg { width: 15px; height: 15px; }
+a.btn { text-decoration: none; color: var(--text); margin: 2px 0; }
 .btn.primary { background: var(--g4); color: #fff; border: 0; }
 .btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--panel); }
@@ -293,6 +294,7 @@ td.num, th.num { text-align: right; }
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
   <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></symbol>
   <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></symbol>
@@ -331,6 +333,7 @@ td.num, th.num { text-align: right; }
       <button data-view="charts"><svg><use href="#i-chart"/></svg>Charts</button>
       <button data-view="watchlist"><svg><use href="#i-star"/></svg>Watchlist</button>
       <button data-view="trades"><svg><use href="#i-receipt"/></svg>Trades</button>
+      <button data-view="clients"><svg><use href="#i-users"/></svg>Clients</button>
       <button data-view="activity"><svg><use href="#i-pulse"/></svg>Activity</button>
       <button data-view="settings"><svg><use href="#i-gear"/></svg>Settings</button>
     </nav>
@@ -454,6 +457,17 @@ td.num, th.num { text-align: right; }
     </section>
 
     <!-- TRADES -->
+    <section class="view" id="v-clients">
+      <div class="panel topline">
+        <div class="phead"><h2><span class="ic" style="background:linear-gradient(135deg,#f7931a,#12a150)"><svg><use href="#i-users"/></svg></span>Client accounts</h2>
+          <div class="act"><button class="iconbtn" id="cl-refresh" title="Refresh"><svg><use href="#i-refresh"/></svg></button></div></div>
+        <div class="table-wrap" id="cl-table"><div class="empty"><span class="spin"></span></div></div>
+        <p class="note">Each client is a separate simulated account trading the same strategy, with its own balances, trades and records; nothing is pooled.
+          Clients log in at this same address with their client id as the username and their own password, and see only their portal.
+          Add one on the server: <code>sudo -u crypto python3 -m bot.run client-add "Full Name" 250000</code> (it prints their login).</p>
+      </div>
+    </section>
+
     <section class="view" id="v-trades">
       <div class="panel">
         <div class="phead">
@@ -547,7 +561,8 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme
 
 /* ---------------- navigation ---------------- */
 const TITLES = {overview: ["Overview", "BTC · DI crossover + ADX-14 trigger · 4h · 8h · 12h · 1d"], charts: ["Charts", "Candles, indicators and drawing tools"],
-  watchlist: ["Watchlist", "Coins on Binance.US and US stocks, read with the bot's DI rule"], trades: ["Trades", "Every trade the bot has made"],
+  watchlist: ["Watchlist", "Coins on Binance.US and US stocks, read with the bot's DI rule"],
+  clients: ["Clients", "Separately managed simulated accounts and their investor portals"], trades: ["Trades", "Every trade the bot has made"],
   activity: ["Activity", "Signals and orders"], settings: ["Settings", "Bot configuration and this device"]};
 let view = "overview";
 function show(v) {
@@ -559,6 +574,7 @@ function show(v) {
   if (location.hash.slice(1).split("?")[0] !== v) history.replaceState(null, "", "#" + v);
   if (v === "charts") Charts.ensure();
   if (v === "watchlist") Watch.load();
+  if (v === "clients") Clients.load();
   if (v === "overview") Equity.ensure();
 }
 $$(".nav button").forEach(b => b.onclick = () => show(b.dataset.view));
@@ -1466,6 +1482,29 @@ const Watch = (() => {
 })();
 
 $("#reload").onclick = () => { $("#reload").classList.add("spinning"); location.reload(); };   // home-screen apps have no reload button
+
+/* ---------------- clients: separately managed accounts (admin view) ---------------- */
+const Clients = (() => {
+  async function load() {
+    try {
+      const r = (await api("api/clients")).clients;
+      if (!r.length) { $("#cl-table").innerHTML = '<div class="empty">No clients yet. Add one on the server with <code>client-add</code> (see below).</div>'; return; }
+      const tot = r.reduce((a, c) => a + c.value, 0), start = r.reduce((a, c) => a + c.start_usd, 0);
+      $("#cl-table").innerHTML = `<table><thead><tr><th>Client</th><th>Since</th><th class="num">Starting capital</th><th class="num">Value now</th>
+        <th class="num">Gain / loss</th><th class="num">vs holding BTC</th><th class="num">In BTC</th><th class="num">Trades</th><th></th></tr></thead><tbody>` +
+        r.map(c => `<tr><td><b>${esc(c.name)}</b><br><small class="muted">${esc(c.id)} · ${c.mode === "paper" ? "simulated" : "live"}</small></td>
+          <td>${esc(c.inception)}</td><td class="num">${usd(c.start_usd)}</td><td class="num"><b>${usd(c.value, 2)}</b></td>
+          <td class="num ${cls(c.gain)}">${(c.gain >= 0 ? "+" : "−") + usd(Math.abs(c.gain), 2)}<br><small>${pct(c.ret, 2)}</small></td>
+          <td class="num ${cls(c.hold_ret)}">${pct(c.hold_ret, 1)}</td><td class="num">${Math.round(100 * c.in_btc)}%</td><td class="num">${c.trades.length}</td>
+          <td><a class="btn" href="portal?client=${encodeURIComponent(c.id)}" target="_blank" rel="noopener">Portal</a>
+            <a class="btn" href="statement?client=${encodeURIComponent(c.id)}" target="_blank" rel="noopener">Statement</a></td></tr>`).join("") +
+        `<tr><td><b>Total</b></td><td></td><td class="num"><b>${usd(start)}</b></td><td class="num"><b>${usd(tot, 2)}</b></td>
+          <td class="num ${cls(tot - start)}"><b>${(tot >= start ? "+" : "−") + usd(Math.abs(tot - start), 2)}</b><br><small>${pct(tot / start - 1, 2)}</small></td><td colspan="4"></td></tr></tbody></table>`;
+    } catch (e) { $("#cl-table").innerHTML = `<div class="empty bad">Couldn't load clients: ${esc(e.message)}</div>`; }
+  }
+  $("#cl-refresh").onclick = load;
+  return {load};
+})();
 
 /* ---------------- portfolio: gains / losses by period for BTC or any watchlist asset ---------------- */
 const Portfolio = (() => {

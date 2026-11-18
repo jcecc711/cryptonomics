@@ -77,6 +77,7 @@ class Config:
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8080
     dashboard_password: str = field(default="", repr=False)
+    stop_path: Path = None                             # kill-switch file; default data_dir/STOP
     ntfy_topic: str = field(default="", repr=False)   # phone alerts; empty = off
     ntfy_server: str = "https://ntfy.sh"
     # tracked (not placed) Coinbase futures shorts, "8h + 4h agree" rule; see bot/shorts.py
@@ -102,7 +103,7 @@ class Config:
     @property
     def stop_file(self):
         """Create this file to stop all new orders (kill switch)."""
-        return self.data_dir / "STOP"
+        return self.stop_path or self.data_dir / "STOP"
 
 
 def load():

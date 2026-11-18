@@ -70,6 +70,14 @@ markets. It gives up growth in strong bull runs.
   against the live book. The rules never sell it; `manual-sell` sells it and hands
   the cash back in the same proportions. It counts in the account total and shows
   as its own card on the dashboard.
+- **Client accounts (paper):** `client-add "Full Name" 250000` creates a separately
+  managed simulated account (its own folder, database, sleeves and trades under
+  `data/clients/<id>/`; nothing is pooled) and prints the client's portal login.
+  `client-list` shows them all; `client-password <id>` resets a login. Clients log
+  in to the dashboard address with their id and password and see only their
+  investor portal: value, gains by period, BTC equivalent, allocation, chart,
+  trades and printable monthly statements. The dashboard's Clients tab lists every
+  account. The main kill switch stops client trading too.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
 - **Dashboard app:** overview (account vs. holding BTC, sleeves with DI gauges and
   candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and

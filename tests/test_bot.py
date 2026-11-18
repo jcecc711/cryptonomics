@@ -915,6 +915,91 @@ class TestStocks(unittest.TestCase):
         self.assertFalse(stocks.is_ticker("BAD TICKER"))
 
 
+class TestClients(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = make_cfg(self.tmp.name, join_open_trend=True, dashboard_password="admin-pw")
+        d = synthetic_candles()
+        di = adx(d, 38, 9)
+        up = di.di_plus > di.di_minus
+        self.candles = d.loc[: up[up].index[-1]]           # DI+ on top: the sleeves buy
+        self.clock = Clock()
+        self.client = FakeClient([(0, "100.00", "100.01"), (5, "99.99", "100.00")], self.candles, self.clock)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_accounts_are_separate_and_report(self):
+        from bot import clients
+        a, pw_a = clients.add(self.cfg, "Ann Able", 250000)
+        b, _ = clients.add(self.cfg, "Ann Able", 1000000)      # same name: its own id
+        self.assertEqual((a["id"], b["id"]), ("ann-able", "ann-able-2"))
+        self.assertTrue(clients.check_password(clients.get(self.cfg, "ann-able"), pw_a))
+        self.assertFalse(clients.check_password(clients.get(self.cfg, "ann-able"), "wrong"))
+        self.assertNotIn(pw_a, clients.registry_path(self.cfg).read_text())   # only a hash is stored
+        with FakeTime(self.clock):
+            clients.run_all(self.cfg, self.client, run.make, run.run_once)
+        for c, start in ((a, 250000), (b, 1000000)):
+            ccfg = clients.client_cfg(self.cfg, c)
+            self.assertTrue(ccfg.db_path.exists())
+            st = Store(ccfg.db_path)
+            self.assertIsNotNone(st.current_trade("1d"))      # its own sleeve bought, with its own money
+            self.assertAlmostEqual(st.rows("SELECT value FROM equity WHERE strategy='total'")[0]["value"], start, delta=start * 0.01)
+            st.db.close()
+            r = clients.report(self.cfg, c, 100.0)
+            self.assertAlmostEqual(r["start_usd"], start)
+            self.assertAlmostEqual(r["value"], start, delta=start * 0.01)
+            self.assertGreater(r["in_btc"], 0.9)
+            self.assertEqual([p["label"] for p in r["periods"]][-1], "Since inception")
+            html = clients.statement(r, r["months"][0]["month"])
+            self.assertIn("SIMULATED (PAPER) ACCOUNT", html)
+            self.assertIn(c["name"], html)
+        self.assertFalse(Path(self.cfg.db_path).exists())       # the main account was not touched
+        self.cfg.mode = "live"
+        with self.assertRaises(SystemExit):
+            clients.add(self.cfg, "Live Person", 5000)          # paper only
+
+    def test_client_login_sees_only_the_portal(self):
+        from bot import clients
+        c, pw = clients.add(self.cfg, "Bea Brown", 500000)
+        clients.add(self.cfg, "Cal Cole", 250000)
+        srv = web.make_server(self.cfg, port=0, client=self.client)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        url = f"http://127.0.0.1:{srv.server_address[1]}"
+
+        def get(path, user, password):
+            auth = {"Authorization": "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()}
+            import http.client
+            con = http.client.HTTPConnection("127.0.0.1", srv.server_address[1])
+            con.request("GET", path, headers=auth)
+            r = con.getresponse()
+            body = r.read()
+            extra = con.sock.recv(1) if con.sock else b""      # a second response on the same connection
+            con.close()
+            self.assertEqual(extra, b"", f"more than one response for {path}")
+            return r.status, body
+        code, body = get("/", c["id"], pw)
+        self.assertEqual(code, 200)
+        self.assertIn(b"Investor Portal", body)                 # a client's home page is the portal
+        code, body = get("/api/me", c["id"], pw)
+        me = json.loads(body)
+        self.assertEqual((code, me["name"], me["start_usd"]), (200, "Bea Brown", 500000))
+        code, _ = get("/api/me?client=cal-cole", c["id"], pw)
+        self.assertEqual(json.loads(_)["name"], "Bea Brown")     # ?client= is ignored for clients
+        for path in ("/api/status", "/api/clients", "/api/candles?tf=4h", "/api/watchlist"):
+            self.assertEqual(get(path, c["id"], pw)[0], 403, path)
+        self.assertEqual(get("/api/me", c["id"], "wrong")[0], 401)
+        self.assertEqual(get("/statement", c["id"], pw)[0], 200)
+        # the admin sees everyone, and any client's portal
+        code, body = get("/api/clients", "joe", "admin-pw")
+        self.assertEqual([x["name"] for x in json.loads(body)["clients"]], ["Bea Brown", "Cal Cole"])
+        self.assertEqual(json.loads(get("/api/me?client=cal-cole", "joe", "admin-pw")[1])["name"], "Cal Cole")
+        self.assertIn(b"Cryptonomics", get("/", "joe", "admin-pw")[1])
+        self.assertEqual(get("/api/me?client=nobody", "joe", "admin-pw")[0], 400)
+
+
 class TestDashboard(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
