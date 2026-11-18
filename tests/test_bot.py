@@ -95,6 +95,7 @@ class Clock:
 def make_cfg(tmp, **kw):
     kw.setdefault("timeframes", ("1d",))
     kw.setdefault("strategies", ("di",))
+    kw.setdefault("price_guard", 0.0)   # the fake book (~100) and the synthetic candles live at different prices
     return Config(data_dir=Path(tmp), poll_sec=10, maker_timeout_min=1, **kw)
 
 
@@ -468,6 +469,50 @@ class TestRunOnce(unittest.TestCase):
         _, action, _ = self.run_once()["1d"]
         self.assertIsNone(action)
         self.assertIn("waiting for a fresh cross", self.store.get("last_run")["sleeves"]["1d"]["summary"])
+
+
+class TestProtection(TestRunOnce):
+    def scaled_client(self, last_close):
+        """A fake book at the candles' own price level (so the price guard sees a normal market)."""
+        px = f"{last_close:.2f}"
+        return FakeClient([(0, px, f"{last_close + 0.01:.2f}")], self.candles, self.clock)
+
+    def test_fixed_stop_sells_on_a_close_under_entry_and_waits_for_a_fresh_cross(self):
+        self.assertEqual(self.run_once()["1d"][1], "BUY")
+        t = self.store.current_trade("1d")
+        last = float(self.candles.close.iloc[-1])
+        with self.store.db:   # pretend the entry was 10% above where the market closed (DI+ is still on top)
+            self.store.db.execute("UPDATE trades SET entry_price=? WHERE id=?", (last / 0.90, t["id"]))
+        _, action, note = self.run_once()["1d"]
+        self.assertEqual(action, "SELL")
+        self.assertIn("stop: 1h close", note)
+        self.assertIsNone(self.store.current_trade("1d"))
+        _, action, _ = self.run_once()["1d"]
+        self.assertIsNone(action)                       # DI+ still on top, but no buying straight back
+        self.assertFalse(self.store.get("1d.state"))    # waits for DI+ to cross again
+
+    def test_stop_ignores_a_close_above_the_level_and_can_be_switched_off(self):
+        self.run_once()
+        t = self.store.current_trade("1d")
+        last = float(self.candles.close.iloc[-1])
+        with self.store.db:
+            self.store.db.execute("UPDATE trades SET entry_price=? WHERE id=?", (last / 0.95, t["id"]))   # down 5%
+        self.assertIsNone(self.run_once()["1d"][1])
+        with self.store.db:
+            self.store.db.execute("UPDATE trades SET entry_price=? WHERE id=?", (last / 0.5, t["id"]))
+        self.cfg.stop_pct = 0
+        self.assertIsNone(self.run_once()["1d"][1])     # off: only the DI exit sells
+
+    def test_price_guard_pauses_trading_when_the_book_is_far_from_the_last_close(self):
+        last = float(self.candles.close.iloc[-1])
+        self.cfg.price_guard = 0.10
+        self.client = FakeClient([(0, f"{last * 0.2:.2f}", f"{last * 0.2 + 0.01:.2f}")], self.candles, self.clock)   # -80% flash
+        _, action, note = self.run_once()["1d"]
+        self.assertIsNone(action)
+        self.assertIn("price guard", note)
+        self.assertEqual(self.store.rows("SELECT * FROM orders"), [])
+        self.client = self.scaled_client(last)          # the book is back to normal: the buy goes ahead
+        self.assertEqual(self.run_once()["1d"][1], "BUY")
 
 
 class TestAlerts(TestRunOnce):

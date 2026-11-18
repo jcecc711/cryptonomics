@@ -64,6 +64,8 @@ class Config:
     poll_sec: float = 10.0
     taker_fallback: bool = True         # cross the spread if the maker order hasn't filled
     max_slippage: float = 0.002         # taker fallback limit, 0.2% through the book
+    stop_pct: float = 0.08              # sell a sleeve's BTC if a 1h candle closes this far under its entry; 0 = off
+    price_guard: float = 0.10           # skip trading if the live price is this far from the last 1h close; 0 = off
 
     # Paper trading
     paper_start_usd: float = 10_000.0
@@ -135,6 +137,8 @@ def load():
         dashboard_password=e("DASHBOARD_PASSWORD", ""),
         ntfy_topic=e("BOT_NTFY_TOPIC", ""),
         ntfy_server=e("BOT_NTFY_SERVER", "https://ntfy.sh"),
+        stop_pct=float(e("BOT_STOP_PCT", 0.08)),
+        price_guard=float(e("BOT_PRICE_GUARD", 0.10)),
         short_tracker=e("BOT_SHORT_TRACKER", "on").lower() in ("on", "true", "1", "yes"),
         short_contracts=int(e("BOT_SHORT_CONTRACTS", 1)),
         short_funding_apr=float(e("BOT_SHORT_FUNDING_APR", 0.10)),

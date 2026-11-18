@@ -764,6 +764,7 @@ function renderOverview() {
       ${adxRow}
       <div class="row"><span class="l">Value</span><span>${usd(sl._val)} <span class="${cls(ret)}">${ret == null ? "" : pct(ret)}</span></span></div>
       <div class="row"><span class="l">Open trade</span><span>${open == null ? "–" : `<span class="${cls(open)}">${pct(open)}</span> from ${price(sl.trade.entry_price)}`}</span></div>
+      ${sl.trade && s.settings.stop_pct ? `<div class="row"><span class="l">Stop (1h close)</span><span>${price(sl.trade.entry_price * (1 - s.settings.stop_pct))} <span class="muted">(${pct(-s.settings.stop_pct, 0)} from entry)</span></span></div>` : ""}
       <div class="row"><span class="l">Candle closes in</span><span data-countdown="${next}" data-tf="${esc(sl.tf)}">${hms(next - now)}</span></div>
       ${note ? `<div class="note">${esc(note)}</div>` : ""}
     </div>`;

@@ -316,7 +316,7 @@ def status(cfg, store, lock):
             "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),
             "settings": {"mode": cfg.mode, "symbol": cfg.symbol, "timeframes": list(cfg.timeframes),
                          "strategies": list(cfg.strategies), "adx_level": cfg.adx_level,
-                         "bear_filter": cfg.bear_filter,
+                         "bear_filter": cfg.bear_filter, "stop_pct": cfg.stop_pct, "price_guard": cfg.price_guard,
                          "di_len": cfg.di_len, "adx_smoothing": cfg.adx_smoothing,
                          "join_open_trend": cfg.join_open_trend, "max_order_usd": cfg.max_order_usd,
                          "maker_timeout_min": cfg.maker_timeout_min, "taker_fallback": cfg.taker_fallback,

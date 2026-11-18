@@ -86,12 +86,29 @@ class Sleeve:
                 action, note = None, "bear filter: skipped a buy signal (halving-cycle bear window)"
             elif trade is not None and action is None:
                 action, note = "SELL", "bear filter: exiting (halving-cycle bear window)"
+        stopped = False
+        if trade is not None and action is None and self.cfg.stop_pct:
+            # fixed stop: a 1h candle closing well under the entry (a close, so a flash wick can't trip it)
+            if ("candles", "1h") not in filters_cache:
+                filters_cache[("candles", "1h")] = client.klines(self.cfg.symbol, "1h", limit=3)
+            close = float(filters_cache[("candles", "1h")].close.iloc[-1])
+            level = trade["entry_price"] * (1 - self.cfg.stop_pct)
+            if close < level:
+                action, stopped = "SELL", True
+                note = (f"stop: 1h close {close:,.2f} is under {level:,.2f} "
+                        f"({self.cfg.stop_pct:.0%} below the {trade['entry_price']:,.2f} entry)")
+        if action and filters_cache.get("price_guard"):
+            note, action = f"price guard: {filters_cache['price_guard']}; skipped {action}", None
+            stopped = False
         if action and self.cfg.stop_file.exists():
             note, action = f"kill switch ({self.cfg.stop_file.name}) is on, skipped {action}", None
+            stopped = False
         elif action:
             if "filters" not in filters_cache:
                 filters_cache["filters"] = client.filters(self.cfg.symbol)
             note = (note + "; " if note else "") + self.trade(action, trade, filters_cache["filters"])
+            if stopped and self.kind == "di" and self.store.current_trade(self.name) is None:
+                self.store.set(f"{self.name}.state", False)   # wait for the next fresh cross, don't buy straight back
         self.store.record_signal(self.name, sig, action or ("HOLD" if self.store.current_trade(self.name) else "WAIT"),
                                  note)
         return sig, action, note
@@ -274,8 +291,23 @@ def _run_once(cfg, client, sleeves, store):
         cache["regime"] = regime.assess(cache[("candles", "1d")])
     except Exception:
         log.exception("regime check failed; trading without the bear filter this run")
+    if cfg.price_guard:
+        # a live price far from the last hourly close means a broken book (a flash crash): don't trade into it
+        try:
+            h1 = client.klines(cfg.symbol, "1h", limit=3)
+            cache[("candles", "1h")] = h1
+            bid, ask = client.book(cfg.symbol)
+            mid, close = float((bid + ask) / 2), float(h1.close.iloc[-1])
+            if abs(mid / close - 1) > cfg.price_guard:
+                cache["price_guard"] = f"live price {mid:,.2f} is {mid / close - 1:+.1%} from the last 1h close {close:,.2f}"
+                log.warning("price guard: %s; no trading this run", cache["price_guard"])
+        except Exception:
+            log.exception("price guard check failed")
+        notify.once_per_change(cfg, store, "price_guard", cache.get("price_guard"), "Price guard: trading paused this hour",
+                               (cache.get("price_guard") or "") + ". Usually a flash crash on a thin order book; "
+                               "the bot checks again next hour.", priority="high", tags=("warning",))
     try:
-        stopped = manual_stop_check(cfg, client, sleeves, store)
+        stopped = manual_stop_check(cfg, client, sleeves, store) if not cache.get("price_guard") else None
     except Exception:
         log.exception("manual stop check failed this run")
         stopped = None

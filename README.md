@@ -78,6 +78,14 @@ markets. It gives up growth in strong bull runs.
   investor portal: value, gains by period, BTC equivalent, allocation, chart,
   trades and printable monthly statements. The dashboard's Clients tab lists every
   account. The main kill switch stops client trading too.
+- **Fixed stop** (`BOT_STOP_PCT`, default 8%): a sleeve sells if a 1-hour candle
+  closes 8% under its entry, then waits for its next fresh signal. It uses candle
+  closes, not wicks, and the sell is the usual capped limit order, so a flash crash
+  can't stop it out at the bottom of a wick (`bench/trail_stops.py`: tighter or
+  trailing stops cut the winners and cost far more than they saved).
+- **Price guard** (`BOT_PRICE_GUARD`, default 10%): if the live price is that far
+  from the last hourly close (a broken order book), the bot trades nothing that
+  hour and sends an alert.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
 - **Dashboard app:** overview (account vs. holding BTC, sleeves with DI gauges and
   candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and
