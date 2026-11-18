@@ -973,6 +973,7 @@ class TestDashboard(unittest.TestCase):
         s = self.get(url + "/api/status")
         self.assertEqual([x["name"] for x in s["sleeves"]], ["4h", "8h", "12h", "1d"])
         self.assertEqual(s["mode"], "paper")
+        self.assertIn("start", s)                                  # first total reading (None before any run)
         self.assertEqual(s["settings"]["di_len"], 38)
         self.assertIn(s["regime"]["call"], ("Bull", "Neutral", "Caution", "Bear"))
         self.assertEqual(s["settings"]["bear_filter"], "halving")

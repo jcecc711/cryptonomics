@@ -258,6 +258,7 @@ def status(cfg, store, lock):
             "short_tracker": store.get("short_tracker") if cfg.short_tracker else None,
             "sleeves": sleeves,
             "equity": total[-2000:],
+            "start": total[0] if total else None,      # the account's first reading, for gains since the start
             "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
             "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),
             "settings": {"mode": cfg.mode, "symbol": cfg.symbol, "timeframes": list(cfg.timeframes),

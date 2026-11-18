@@ -208,6 +208,21 @@ td.num, th.num { text-align: right; }
 .coin .av { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 11px; flex: none; }
 .coin small { color: var(--muted); }
 .tag { font-size: 10.5px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: var(--g1); color: #fff; }
+.gain { position: relative; overflow: hidden; display: grid; grid-template-columns: auto 1fr 1fr; gap: 6px 26px; align-items: center;
+  padding: 18px 22px; margin-bottom: 16px; border-radius: 18px; color: #fff; box-shadow: var(--shadow); }
+.gain.up { background: linear-gradient(120deg, #f7931a 0%, #f5b041 35%, #12a150 100%); }
+.gain.down { background: linear-gradient(120deg, #f7931a 0%, #e5484d 100%); }
+.gain .coin { width: 58px; height: 58px; border-radius: 50%; background: rgba(255,255,255,.22); display: grid; place-items: center;
+  font-size: 34px; font-weight: 900; }
+.gain .t { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; opacity: .92; }
+.gain .v { font-size: 30px; font-weight: 900; line-height: 1.1; }
+.gain .s { font-size: 13px; opacity: .95; }
+.gain .coin { grid-row: 1 / 3; }
+.gain .head { grid-column: 2 / 4; font-size: 18px; font-weight: 800; }
+.gain .head .s { display: block; font-weight: 600; }
+.gain .usd { grid-column: 2; } .gain .btc { grid-column: 3; }
+@media (max-width: 700px) { .gain { grid-template-columns: auto 1fr; } .gain .coin { grid-row: 1; } .gain .head { grid-column: 2; }
+  .gain .usd, .gain .btc { grid-column: 1 / 3; } .gain .v { font-size: 26px; } }
 .bp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 14px 18px; margin-bottom: 16px;
   border-radius: 14px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
 .bp .big { font-size: 20px; font-weight: 800; }
@@ -331,6 +346,7 @@ td.num, th.num { text-align: right; }
 
     <!-- OVERVIEW -->
     <section class="view" id="v-overview">
+      <div class="gain" id="gain" hidden></div>
       <div class="kpis">
         <div class="kpi" style="background:var(--g1)"><div class="k">Total account</div><div class="v" id="k-total">–</div><div class="s" id="k-total-s">&nbsp;</div><svg class="bgicon"><use href="#i-wallet"/></svg></div>
         <div class="kpi" style="background:var(--g2)"><div class="k">vs. just holding BTC</div><div class="v" id="k-edge">–</div><div class="s" id="k-edge-s">&nbsp;</div><svg class="bgicon"><use href="#i-trend"/></svg></div>
@@ -627,6 +643,23 @@ function sleeveState(sl) {
     : up ? (sl.kind === "adx" ? [`Waiting: ADX ↑ ${r.level ?? 14}`, "wait"] : ["Waiting: fresh cross", "wait"]) : ["In cash", ""];
   return {sig, r, up, st};
 }
+function renderGain(s, px, total, held) {
+  // dollars and bitcoin gained since the account started
+  const st = s.start, box = $("#gain");
+  if (!st || !px || !total) { box.hidden = true; return; }
+  const usdCh = total - st.value, usdPct = total / st.value - 1;
+  const btcStart = st.value / st.price, btcNow = total / px, btcCh = btcNow - btcStart, btcPct = btcNow / btcStart - 1;
+  const up = btcPct >= 0, f = (x, d) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(d);
+  const since = new Date(toSec(st.ts) * 1000).toLocaleDateString(undefined, {month: "short", day: "numeric"});
+  box.className = "gain " + (up ? "up" : "down"); box.hidden = false;
+  box.innerHTML = `<div class="coin">₿</div>
+    <div class="head">${up ? "Bitcoin gained! 🚀" : "Bitcoin given back"} <span class="s">since ${since}</span></div>
+    <div class="usd"><div class="t">Dollar value</div><div class="v">${(usdCh >= 0 ? "+" : "−") + usd(Math.abs(usdCh), 2)}</div>
+      <div class="s">${usd(total, 2)} now · ${f(100 * usdPct, 2)}% from ${usd(st.value)}</div></div>
+    <div class="btc"><div class="t">Bitcoin stack</div><div class="v">${f(btcCh, 5)} BTC</div>
+      <div class="s">worth ${btcNow.toFixed(5)} BTC now vs ${btcStart.toFixed(5)} at the start (${f(100 * btcPct, 1)}%)${held > 0 ? ` · holding ${held.toFixed(5)} BTC` : ""}</div></div>`;
+}
+
 function renderBuyingPower(s, px) {
   // BTC the sleeves' cash buys now vs. at the price when each went to cash
   const cashOf = sl => (sl.balance || sl.last || {}).cash || 0;
@@ -665,6 +698,7 @@ function renderOverview() {
     $("#k-exp-s").textContent = `${s.sleeves.filter(x => x.trade).length} of ${s.sleeves.length} sleeves · open P/L ${usd(openPl)}`;
   }
   renderBuyingPower(s, px);
+  renderGain(s, px, total, s.sleeves.reduce((a, sl) => a + ((sl.balance || sl.last || {}).btc || 0), 0));
   const closed = s.trades.filter(t => t.exit_time);
   const wins = closed.filter(t => t.ret > 0).length;
   $("#k-trades").textContent = closed.length;
