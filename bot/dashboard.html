@@ -446,7 +446,7 @@ td.num, th.num { text-align: right; }
         <div class="legend" id="legend"></div>
         <div id="panes"></div>
       </div>
-      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Colored dots show what the strategy's rules say on this timeframe (DI buy, ADX buy, sell; toggle under Indicators); bold ▲ / ▼ arrows are trades that actually filled on BTC, including manual buys.</p>
+      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Colored dots show the strategy's Enter / Exit signals on this timeframe (Enter = DI+ crosses above DI-; Enter (ADX) = ADX rises through 14 with DI+ on top; Exit = DI+ crosses below DI-; toggle under Indicators); bold ▲ / ▼ arrows are trades that actually filled on BTC, including manual buys.</p>
     </section>
 
     <!-- WATCHLIST -->
@@ -1129,9 +1129,9 @@ const Charts = (() => {
     const d = Ind.dmi(b.map(x => x.h), b.map(x => x.l), b.map(x => x.c), 38, 9), out = [];
     for (let i = 100; i < n; i++) {                  // skip the indicator warm-up
       const up = d.p[i] > d.m[i], was = d.p[i - 1] > d.m[i - 1];
-      if (up && !was) out.push({time: b[i].t, position: "belowBar", color: "#0ca678", shape: "circle", text: "DI buy"});
-      if (!up && was) out.push({time: b[i].t, position: "aboveBar", color: "#f76707", shape: "circle", text: "sell"});
-      if (up && d.adx[i] > 14 && d.adx[i - 1] <= 14) out.push({time: b[i].t, position: "belowBar", color: "#7048e8", shape: "circle", text: "ADX buy"});
+      if (up && !was) out.push({time: b[i].t, position: "belowBar", color: "#0ca678", shape: "circle", text: "Enter"});
+      if (!up && was) out.push({time: b[i].t, position: "aboveBar", color: "#f76707", shape: "circle", text: "Exit"});
+      if (up && d.adx[i] > 14 && d.adx[i - 1] <= 14) out.push({time: b[i].t, position: "belowBar", color: "#7048e8", shape: "circle", text: "Enter (ADX)"});
     }
     return out;
   }
@@ -1373,7 +1373,7 @@ const Charts = (() => {
     const box = (id, label, col) => `<label><input type="checkbox" data-ind="${id}" ${inds.has(id) ? "checked" : ""}>${label}${col ? `<i style="background:${col}"></i>` : ""}</label>`;
     $("#ind-pop").innerHTML = `<h4>Your MA + EMA set</h4>` + Object.entries(MA_SET).map(([n, [, , c]]) => box(n, n, c)).join("") +
       `<h4>On the price chart</h4>${box("vol", "Volume")}${box("bb", "Bollinger Bands (20, 2)", "#7c5cff")}` +
-      `<label><input type="checkbox" id="sig-toggle" ${store.get("showSig", true) ? "checked" : ""}>Strategy signals (DI buy · ADX buy · sell)<i style="background:#0ca678"></i></label>` +
+      `<label><input type="checkbox" id="sig-toggle" ${store.get("showSig", true) ? "checked" : ""}>Strategy signals (Enter · Exit)<i style="background:#0ca678"></i></label>` +
       `<h4>Panels below</h4>` + Object.entries(PANES).map(([k, n]) => box(k, n)).join("");
     $$("#ind-pop input[data-ind]").forEach(i => i.onchange = () => { i.checked ? inds.add(i.dataset.ind) : inds.delete(i.dataset.ind); store.set("inds", [...inds]); rebuild(true); });
     $("#sig-toggle").onchange = e => { store.set("showSig", e.target.checked); markers(); };
