@@ -670,6 +670,8 @@ class TestManualPosition(unittest.TestCase):
         self.assertIn("Manual position", self.store.get("last_run")["sleeves"]["manual"]["summary"])
         s = {x["name"]: x for x in web.status(self.cfg, self.store, threading.Lock())["sleeves"]}
         self.assertEqual((s["manual"]["share"], s["manual"]["start_value"]), (0.0, 300.0))
+        self.assertEqual(s["1d"]["balance"]["cash"], 350.0)                 # live balances, not the hourly snapshot
+        self.assertGreater(s["manual"]["balance"]["btc"], 2.9)
         self.assertAlmostEqual(s["1d"]["start_value"], 350.0)
         with FakeTime(self.clock):
             note = run.manual_sell(self.cfg, self.client, sleeves, self.store)

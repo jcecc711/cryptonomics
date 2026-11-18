@@ -235,7 +235,10 @@ def status(cfg, store, lock):
                     since = {"time": sold[0]["exit_time"], "price": sold[0]["exit_price"], "how": "sold"}
                 elif eq:
                     since = {"time": eq[0]["ts"], "price": eq[0]["price"], "how": "started"}
+            cash, btc = store.get(f"{name}.cash"), store.get(f"{name}.btc")
             sleeves.append({
+                # balances right now (the equity snapshots are hourly; a manual buy moves cash in between)
+                "balance": {"cash": float(cash), "btc": float(btc or 0)} if cash is not None else None,
                 "cash_since": since,
                 "name": name, "kind": kind, "tf": tf, "share": 0.0 if kind == "manual" else 1 / len(specs),
                 "trade": trade,
