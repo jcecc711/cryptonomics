@@ -77,6 +77,9 @@ class FakeClient:
     def tradable_symbols(self, quotes=("USDT", "USD", "USDC")):
         return [{"symbol": b + "USDT", "base": b, "quote": "USDT"} for b in ("BTC", "ETH", "SOL", "SUI")]
 
+    def wallet(self):
+        return {"USDT": (D("1500.5"), D("0")), "BTC": (D("0.01"), D("0.005")), "XYZ": (D("3"), D("0"))}
+
 
 class Clock:
     def __init__(self):
@@ -1147,6 +1150,35 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual((st["unit"], st["name"]), ("AAPL", "Apple Inc."))
         self.assertTrue(any(p["strategy"] for p in st["periods"]))
         self.get(url + "/api/portfolio?symbol=BAD!", expect=400)
+
+    def test_wallet_is_read_and_valued_for_the_admin_only(self):
+        url = self.serve()
+        self.assertEqual(self.get(url + "/api/wallet"), {"configured": False})     # no API key: nothing to read
+        web._cache.clear()
+        cfg = make_cfg(self.tmp.name, api_key="k", api_secret="s", dashboard_password="pw")
+        from bot import clients
+        c, cpw = clients.add(cfg, "Dee Dunn", 100000)
+        srv = web.make_server(cfg, port=0, client=FakeClient(candles=ensemble_candles()))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        base = f"http://127.0.0.1:{srv.server_address[1]}/api/wallet"
+        auth = lambda u, p: {"Authorization": "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()}
+        w = json.loads(urllib.request.urlopen(urllib.request.Request(base, headers=auth("joe", "pw"))).read())
+        got = {a["asset"]: a for a in w["assets"]}
+        self.assertEqual(got["USDT"]["value"], 1500.5)
+        self.assertAlmostEqual(got["BTC"]["total"], 0.015)                 # free + in open orders
+        self.assertAlmostEqual(got["BTC"]["value"], 1.5)                   # at the fake 100.0 price
+        self.assertIsNone(got["XYZ"]["value"])                             # no market to price it
+        self.assertAlmostEqual(w["total"], 1502.0)
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(urllib.request.Request(base, headers=auth(c["id"], cpw)))
+        self.assertEqual(e.exception.code, 403)                            # clients never see it
+
+    def test_lookalike_key_gets_a_clear_error(self):
+        from bot.binanceus import BinanceUS
+        with self.assertRaisesRegex(RuntimeError, "look-alike"):
+            BinanceUS("k\u0435y", "secret").balances()                    # Cyrillic "e"
 
     def test_price(self):
         url = self.serve()

@@ -241,6 +241,10 @@ td.num, th.num { text-align: right; }
 .bp .big { font-size: 20px; font-weight: 800; }
 .bp .lab { font-weight: 700; }
 .kind.k-manual { background: var(--g4); color: #fff; }
+.wallet { margin-bottom: 16px; }
+.wallet .tag.real { background: #fff4e5; color: #b25e00; border: 1px solid #f5c27a; margin-left: 6px; }
+.wallet .wt { font-size: 28px; font-weight: 900; margin: 2px 0 10px; }
+.wallet.live { border: 2px solid #f0b90b; }
 .sh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 .sh-grid b { font-size: 15px; }
 .tag.stock { background: var(--chip); color: var(--muted); }
@@ -362,6 +366,12 @@ td.num, th.num { text-align: right; }
 
     <!-- OVERVIEW -->
     <section class="view" id="v-overview">
+      <div class="panel wallet" id="wallet" hidden>
+        <div class="phead"><h2><span class="ic" style="background:linear-gradient(135deg,#f0b90b,#f7931a)"><svg><use href="#i-wallet"/></svg></span>Binance.US wallet
+          <span class="tag real">REAL · READ-ONLY</span></h2>
+          <div class="act"><span class="muted" id="w-asof"></span></div></div>
+        <div id="w-body"></div>
+      </div>
       <div class="panel pf" id="pf">
         <div class="phead"><h2><span class="ic" style="background:linear-gradient(135deg,#f7931a,#12a150)"><svg><use href="#i-wallet"/></svg></span>Portfolio</h2>
           <div class="act"><select id="pf-sym" aria-label="Coin or stock"></select></div></div>
@@ -716,6 +726,7 @@ function renderOverview() {
   }
   renderBuyingPower(s, px);
   Portfolio.symbols(s);
+  Wallet.load();
   const closed = s.trades.filter(t => t.exit_time);
   const wins = closed.filter(t => t.ret > 0).length;
   $("#k-trades").textContent = closed.length;
@@ -1482,6 +1493,39 @@ const Watch = (() => {
 })();
 
 $("#reload").onclick = () => { $("#reload").classList.add("spinning"); location.reload(); };   // home-screen apps have no reload button
+
+/* ---------------- the real exchange wallet (read-only; leads the page in live mode) ---------------- */
+const Wallet = (() => {
+  let last = 0;
+  async function load(force) {
+    if (!force && Date.now() - last < 55000) return;
+    last = Date.now();
+    let w;
+    try { w = await api("api/wallet"); } catch (e) { w = {configured: true, error: e.message}; }
+    render(w);
+  }
+  function render(w) {
+    const box = $("#wallet"), live = S.status && S.status.mode === "live";
+    if (!w.configured) { box.hidden = !live; $("#w-body").innerHTML = '<div class="empty">Add your Binance.US API key to see your real wallet here.</div>'; return; }
+    box.hidden = false;
+    box.classList.toggle("live", live);
+    // live: the real wallet is the main balance, so it leads the page; practice: it sits below the practice numbers
+    const anchor = live ? $("#v-overview").firstElementChild : $("#bp");   // live: first thing on the page; practice: under the practice numbers
+    if (live ? anchor !== box : box.previousElementSibling !== anchor) anchor.parentNode.insertBefore(box, live ? anchor : anchor.nextSibling);
+    if (w.error) { $("#w-body").innerHTML = `<div class="empty bad">Couldn't read the wallet: ${esc(w.error)}</div>`; return; }
+    $("#w-asof").textContent = "updated " + new Date(w.time * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+    const rows = w.assets.map(a => `<tr><td><b>${esc(a.asset)}</b></td><td class="num">${a.total.toLocaleString(undefined, {maximumFractionDigits: a.price && a.price > 100 ? 8 : 2})}</td>
+      <td class="num muted">${a.locked ? a.locked.toLocaleString(undefined, {maximumFractionDigits: 8}) : "–"}</td>
+      <td class="num">${a.price != null ? price(a.price) : "–"}</td><td class="num"><b>${a.value != null ? usd(a.value, 2) : "no price"}</b></td></tr>`).join("");
+    $("#w-body").innerHTML = `<div class="wt">${usd(w.total, 2)}</div>` + (w.assets.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Asset</th><th class="num">Amount</th><th class="num">In open orders</th><th class="num">Price</th><th class="num">Value</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : '<div class="empty">The wallet is empty. Deposit USDT (or USD) to fund live trading.</div>') +
+      `<p class="note">${live ? "Live trading: the bot trades its sleeves' share of this wallet; anything else here stays untouched."
+        : "Your real Binance.US balances, read with your API key. The bot is in practice mode and doesn't trade this wallet until you switch to live."}</p>`;
+  }
+  setInterval(() => { if (view === "overview") load(); }, 60000);
+  return {load};
+})();
 
 /* ---------------- clients: separately managed accounts (admin view) ---------------- */
 const Clients = (() => {

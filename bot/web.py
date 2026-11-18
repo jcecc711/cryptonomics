@@ -17,6 +17,7 @@ Endpoints (all behind DASHBOARD_PASSWORD when set, any username):
     GET  /api/me                a client's own account report (admin: ?client=<id>)
     GET  /statement             ?month=YYYY-MM printable monthly statement (admin: &client=<id>)
     GET  /api/clients           admin: every client account with its value and gain
+    GET  /api/wallet            admin: the real Binance.US wallet (read-only), valued in USD
     GET  /api/portfolio         ?symbol=BTCUSDT  gains / losses by period (1W, 1M, YTD, each year
                                 to 2020): the practice account, the rules simulated on history, holding
 
@@ -237,6 +238,34 @@ class LockedStore:
             return self.store.rows(*a)
 
 
+STABLE = {"USD": 1.0, "USDT": 1.0, "USDC": 1.0}
+
+
+def wallet(cfg, client):
+    """The real exchange wallet, read with the API key: every asset, free and in orders, in USD."""
+    if not (cfg.api_key and cfg.api_secret):
+        return {"configured": False}
+
+    def load():
+        held = client.wallet()
+        known = {x["symbol"] for x in tradable(client)}
+        pairs = {a: next((a + q for q in ("USDT", "USD") if a + q in known), None) for a in held if a not in STABLE}
+        prices = {}
+        wanted = sorted({p for p in pairs.values() if p})
+        if wanted:
+            prices = {t["symbol"]: float(t["lastPrice"]) for t in client.tickers_24h(wanted)}
+        assets = []
+        for a, (free, locked) in held.items():
+            px = STABLE.get(a) or prices.get(pairs.get(a))
+            total = float(free + locked)
+            assets.append({"asset": a, "free": float(free), "locked": float(locked), "total": total,
+                           "price": px, "value": total * px if px else None})
+        assets.sort(key=lambda x: -(x["value"] or 0))
+        return {"configured": True, "assets": assets, "total": sum(x["value"] or 0 for x in assets),
+                "time": time.time(), "mode": cfg.mode}
+    return _cache.get(("wallet",), 30, load)
+
+
 def market_regime(cfg, client):
     """Fresh regime readings for the dashboard (the bot stores its own each run)."""
     return _cache.get(("regime", cfg.symbol), 300, lambda: regime_mod.assess(client.klines(cfg.symbol, "1d")))
@@ -386,6 +415,11 @@ def make_handler(cfg, store, client):
                     return
                 if self.role == "client":           # clients see only their own portal
                     return self._send(403, {"error": "not available"})
+                if url.path == "/api/wallet":
+                    try:
+                        return self._send(200, wallet(cfg, client))
+                    except Exception as e:      # bad key, IP not allowed, exchange down: say so, keep the page
+                        return self._send(200, {"configured": True, "error": str(e)})
                 if url.path == "/api/clients":
                     mid = self._mid()
                     return self._send(200, {"clients": [clients_mod.report(cfg, c, mid) for c in clients_mod.load(cfg)]})
@@ -473,7 +507,7 @@ def make_handler(cfg, store, client):
 
 def make_server(cfg, port=None, client=None):
     store = Store(cfg.db_path)
-    client = client or BinanceUS()
+    client = client or BinanceUS(cfg.api_key, cfg.api_secret)   # the key is used only to read the wallet
     return ThreadingHTTPServer((cfg.dashboard_host, cfg.dashboard_port if port is None else port),
                                make_handler(cfg, store, client))
 

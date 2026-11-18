@@ -57,6 +57,9 @@ class BinanceUS:
         if signed:
             if not (self.key and self.secret):
                 raise RuntimeError("API key and secret are required for this call")
+            if not (self.key.isascii() and self.secret.isascii()):
+                raise RuntimeError("The API key or secret contains a look-alike (non-English) character; "
+                                   "copy it again with Binance.US's copy button")
             params["timestamp"] = int(time.time() * 1000) + self.offset()
             params["recvWindow"] = 5000
             q = urlencode(params)
@@ -121,6 +124,12 @@ class BinanceUS:
                        f["LOT_SIZE"]["minQty"], notional["minNotional"])
 
     # -- account -----------------------------------------------------------
+    def wallet(self):
+        """Every asset held: {asset: (free, locked)}, nonzero only. Read-only."""
+        acct = self._request("GET", "/api/v3/account", signed=True)
+        return {b["asset"]: (Decimal(b["free"]), Decimal(b["locked"])) for b in acct["balances"]
+                if Decimal(b["free"]) or Decimal(b["locked"])}
+
     def balances(self):
         acct = self._request("GET", "/api/v3/account", signed=True)
         return {b["asset"]: Decimal(b["free"]) for b in acct["balances"]}
