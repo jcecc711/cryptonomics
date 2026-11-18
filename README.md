@@ -130,6 +130,7 @@ sleeve holds.
     python bench/ema_cross.py                         # EMA 8/13 cross, long / short, 15m-1d
     python bench/short_hedge.py                       # 10% short instead of cash after a sell
     python bench/mtf_switch.py                        # long/short: 4h vs 8h entry with 4h exit
+    python bench/adx_plus.py                          # ADX add-ons (RSI, CHOP, ER, exits) + long/short BTC stacking
 
 - `bench/data.py` downloads and caches Binance.US and Coinbase candles in `data/`.
 - `bench/indicators.py` has EMA, SMA and ADX/DI matching TradingView.
