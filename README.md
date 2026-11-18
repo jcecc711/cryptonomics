@@ -140,6 +140,7 @@ sleeve holds.
     python bench/mtf_switch.py                        # long/short: 4h vs 8h entry with 4h exit
     python bench/adx_plus.py                          # ADX add-ons (RSI, CHOP, ER, exits) + long/short BTC stacking
     python bench/trail_stops.py                       # trailing / fixed stops on longs and shorts
+    python bench/swing_match.py                       # which rules come closest to ideal swing entries / exits
 
 - `bench/data.py` downloads and caches Binance.US and Coinbase candles in `data/`.
 - `bench/indicators.py` has EMA, SMA and ADX/DI matching TradingView.
