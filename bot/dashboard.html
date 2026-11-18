@@ -245,6 +245,14 @@ td.num, th.num { text-align: right; }
 .wallet .tag.real { background: #fff4e5; color: #b25e00; border: 1px solid #f5c27a; margin-left: 6px; }
 .wallet .wt { font-size: 28px; font-weight: 900; margin: 2px 0 10px; }
 .wallet.live { border: 2px solid #f0b90b; }
+.test-pop { width: 330px; max-width: calc(100vw - 32px); }
+.test-pop .trow { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.test-pop .trow input[type=number] { width: 64px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
+.test-pop .trow select { padding: 5px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
+.test-pop .sw { width: 22px; height: 4px; border-radius: 2px; display: inline-block; background-image: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 8px); }
+.test-pop .tnote { font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
+.test-pop .tact { display: flex; gap: 8px; margin-top: 10px; }
+#test-btn.on { border-color: #00b8d9; color: #00b8d9; }
 .sh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 .sh-grid b { font-size: 15px; }
 .tag.stock { background: var(--chip); color: var(--muted); }
@@ -425,6 +433,10 @@ td.num, th.num { text-align: right; }
         <div class="menu" id="ind-menu">
           <button class="btn" id="ind-btn"><svg><use href="#i-layers"/></svg>Indicators</button>
           <div class="pop" id="ind-pop"></div>
+        </div>
+        <div class="menu" id="test-menu">
+          <button class="btn" id="test-btn" title="Try other indicator settings on the chart (the bot is not changed)"><svg><use href="#i-ruler"/></svg>Test</button>
+          <div class="pop test-pop" id="test-pop"></div>
         </div>
         <span class="sep hide-mob"></span>
         <div class="seg" id="c-tools" title="Drawing tools">
@@ -928,6 +940,9 @@ const Ind = {
 const MA_SET = {"EMA 8": ["ema", 8, "#e8b400"], "EMA 13": ["ema", 13, "#f08c00"], "EMA 21": ["ema", 21, "#1aa0c8"], "EMA 55": ["ema", 55, "#e64980"],
   "MA 55": ["sma", 55, "#4263eb"], "MA 100": ["sma", 100, "#e03131"], "MA 200": ["sma", 200, "#2f9e44"]};
 const PANES = {dmi: "DI+ / DI- / ADX (38)", rsi: "RSI (14)", macd: "MACD (12, 26, 9)", stoch: "Stochastic (14, 3, 3)", atr: "ATR (14)"};
+// test settings: temporary, this browser only; the bot and the default lines are never changed
+const TEST_COLORS = ["#00b8d9", "#d63bd6", "#7cb518"];
+const TEST_DMI = {p: "#00b8d9", m: "#d63bd6", adx: "#e8a400"};
 const IND_DEFAULT = ["EMA 8", "EMA 13", "EMA 21", "EMA 55", "MA 55", "MA 100", "MA 200", "vol", "dmi"];
 
 /* ---------------- charts ---------------- */
@@ -936,7 +951,9 @@ const Charts = (() => {
   let st = {sym: store.get("csym", "BTCUSDT"), tf: store.get("ctf", "4h"), type: store.get("ctype", "candle"), bars: [], hasMore: true, loading: false, ready: false};
   let panes = [];        // {id, chart, el, series:{}, main?}
   let main = null, syncing = false, tool = "cursor", pending = null, tmpSeries = null, liveTimer = null, symbolsLoaded = false;
-  let computed = null;   // last indicator values, reused by the legend on every mouse move
+  let computed = null;
+  let test = store.get("testInd", {lines: [{on: false, f: "ema", n: 21}, {on: false, f: "sma", n: 50}, {on: false, f: "ema", n: 100}],
+    dmi: {on: false, n: 14, sm: 14, level: 20}, signals: false});   // last indicator values, reused by the legend on every mouse move
   const heights = store.get("heights", {});
 
   function chartOpts(isLast) {
@@ -989,8 +1006,15 @@ const Charts = (() => {
       lineStyle: k === "bbm" ? LW.LineStyle.Dashed : LW.LineStyle.Solid, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false}));
     Object.entries(MA_SET).forEach(([n, [, len, col]]) => { if (inds.has(n)) ms[n] = main.chart.addLineSeries({color: col, lineWidth: n.startsWith("MA") ? 2 : 1,
       priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false}); });
+    test.lines.forEach((x, i) => { if (x.on) ms["T" + i] = main.chart.addLineSeries({color: TEST_COLORS[i], lineWidth: 2, lineStyle: LW.LineStyle.Dashed,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false}); });
     panes.slice(1).forEach(p => {
       const line = (col, w = 1.5) => p.chart.addLineSeries({color: col, lineWidth: w, priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false});
+      if (p.id === "dmi" && test.dmi.on) {
+        const dl = col => p.chart.addLineSeries({color: col, lineWidth: 1.5, lineStyle: LW.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false});
+        p.series.tp = dl(TEST_DMI.p); p.series.tm = dl(TEST_DMI.m); p.series.tadx = dl(TEST_DMI.adx);
+        p.series.tadx.createPriceLine({price: test.dmi.level, color: TEST_DMI.adx, lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: "test"});
+      }
       if (p.id === "dmi") { p.series.p = line(css("--up"), 2); p.series.m = line(css("--down"), 2); p.series.adx = line("#9098aa", 1);
         [[11, "#9098aa"], [14, css("--down")], [17, css("--down")]].forEach(([v, c]) => p.series.p.createPriceLine({price: v, color: c, lineWidth: 1, lineStyle: LW.LineStyle.Dashed, axisLabelVisible: false})); }
       if (p.id === "rsi") { p.series.r = line("#7c5cff", 1.5); [30, 70].forEach(v => p.series.r.createPriceLine({price: v, color: "#9098aa", lineWidth: 1, lineStyle: LW.LineStyle.Dashed, axisLabelVisible: false})); }
@@ -1044,7 +1068,9 @@ const Charts = (() => {
     if (inds.has("vol")) out.main.vol = b.map(x => ({time: x.t, value: x.v, color: x.c >= x.o ? "rgba(18,161,80,.35)" : "rgba(229,72,77,.35)"}));
     if (inds.has("bb")) { const m = Ind.sma(c, 20), sd = Ind.std(c, 20); out.main.bbm = pts(m); out.main.bbu = pts(m.map((x, i) => x == null ? null : x + 2 * sd[i])); out.main.bbl = pts(m.map((x, i) => x == null ? null : x - 2 * sd[i])); }
     Object.entries(MA_SET).forEach(([n, [f, len]]) => { if (inds.has(n)) { const a = f === "ema" ? Ind.ema(c, len) : Ind.sma(c, len); out.main[n] = pts(a); } });
-    if (inds.has("dmi")) { const d = Ind.dmi(h, l, c, 38, 9); out.sub.dmi = {p: pts(d.p), m: pts(d.m), adx: pts(d.adx)}; }
+    if (inds.has("dmi")) { const d = Ind.dmi(h, l, c, 38, 9); out.sub.dmi = {p: pts(d.p), m: pts(d.m), adx: pts(d.adx)};
+      if (test.dmi.on) { const e = Ind.dmi(h, l, c, test.dmi.n, test.dmi.sm); Object.assign(out.sub.dmi, {tp: pts(e.p), tm: pts(e.m), tadx: pts(e.adx)}); } }
+    test.lines.forEach((x, i) => { if (x.on) out.main["T" + i] = pts(x.f === "ema" ? Ind.ema(c, x.n) : Ind.sma(c, x.n)); });
     if (inds.has("rsi")) out.sub.rsi = {r: pts(Ind.rsi(c))};
     if (inds.has("macd")) { const m = Ind.macd(c); out.sub.macd = {m: pts(m.m), s: pts(m.sig), h: m.h.map((v, i) => ({time: t[i], value: v, color: v >= 0 ? "rgba(18,161,80,.55)" : "rgba(229,72,77,.55)"}))}; }
     if (inds.has("stoch")) { const s = Ind.stoch(h, l, c); out.sub.stoch = {k: pts(s.k), d: pts(s.d)}; }
@@ -1136,9 +1162,23 @@ const Charts = (() => {
     }
     return out;
   }
+  // the same Enter / Exit rules, with the test DI length, ADX smoothing and ADX level (squares)
+  function testSignals() {
+    const b = st.bars, n = b.length - 1, T = test.dmi.on ? test.dmi : {n: 38, sm: 9, level: 14};
+    if (n < 120) return [];
+    const d = Ind.dmi(b.map(x => x.h), b.map(x => x.l), b.map(x => x.c), T.n, T.sm), out = [];
+    for (let i = 100; i < n; i++) {
+      const up = d.p[i] > d.m[i], was = d.p[i - 1] > d.m[i - 1];
+      if (up && !was) out.push({time: b[i].t, position: "belowBar", color: TEST_DMI.p, shape: "square", text: "T Enter"});
+      if (!up && was) out.push({time: b[i].t, position: "aboveBar", color: TEST_DMI.m, shape: "square", text: "T Exit"});
+      if (up && d.adx[i] > T.level && d.adx[i - 1] <= T.level) out.push({time: b[i].t, position: "belowBar", color: TEST_DMI.adx, shape: "square", text: "T Enter (ADX)"});
+    }
+    return out;
+  }
   function markers() {
     if (!main || !S.status || !st.bars.length) return;
     const m = store.get("showSig", true) ? strategySignals() : [];
+    if (test.signals) m.push(...testSignals());
     if (st.sym === S.status.symbol) {                // real fills: the bot's trades and manual buys (bold arrows)
       const first = st.bars[0].t, snap = t => { let lo = 0, hi = st.bars.length - 1; if (t < first) return null;
         while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (st.bars[mid].t <= t) lo = mid; else hi = mid - 1; } return st.bars[lo].t; };
@@ -1380,6 +1420,38 @@ const Charts = (() => {
     $("#sig-toggle").onchange = e => { store.set("showSig", e.target.checked); markers(); };
   }
   $("#ind-btn").onclick = e => { e.stopPropagation(); $("#ind-menu").classList.toggle("open"); };
+  function renderTest() {
+    const active = test.lines.some(x => x.on) || test.dmi.on || test.signals;
+    $("#test-btn").classList.toggle("on", active);
+    const num = (k, v, min, max) => `<input type="number" data-k="${k}" value="${v}" min="${min}" max="${max}">`;
+    $("#test-pop").innerHTML = `<h4>Test lines on the price chart (dashed)</h4>` +
+      test.lines.map((x, i) => `<div class="trow"><input type="checkbox" data-k="l${i}.on" ${x.on ? "checked" : ""}>
+        <span class="sw" style="color:${TEST_COLORS[i]}"></span>
+        <select data-k="l${i}.f"><option value="ema" ${x.f === "ema" ? "selected" : ""}>EMA</option><option value="sma" ${x.f === "sma" ? "selected" : ""}>MA</option></select>
+        ${num(`l${i}.n`, x.n, 2, 400)}</div>`).join("") +
+      `<h4>Test DI / ADX (dashed, in the DI pane)</h4>
+      <div class="trow"><input type="checkbox" data-k="dmi.on" ${test.dmi.on ? "checked" : ""}>
+        DI length ${num("dmi.n", test.dmi.n, 3, 200)} smoothing ${num("dmi.sm", test.dmi.sm, 2, 100)}</div>
+      <div class="trow" style="padding-left:24px">ADX level ${num("dmi.level", test.dmi.level, 1, 80)}
+        <span class="sw" style="color:${TEST_DMI.p}"></span><span class="sw" style="color:${TEST_DMI.m}"></span><span class="sw" style="color:${TEST_DMI.adx}"></span></div>
+      <div class="trow"><input type="checkbox" data-k="signals" ${test.signals ? "checked" : ""}> Show test Enter / Exit markers (squares)</div>
+      <div class="tnote">For trying ideas on the chart only: temporary, saved in this browser. The bot keeps trading 38 / 9 / 14 and your default lines stay as they are.${inds.has("dmi") ? "" : " Turn on the DI / ADX panel to see the test DI lines."}</div>
+      <div class="tact"><button class="btn primary" id="test-apply">Apply</button><button class="btn" id="test-clear">Clear test settings</button></div>`;
+    $("#test-apply").onclick = () => {
+      const v = k => $(`#test-pop [data-k="${k}"]`), int = (k, lo, hi, d) => Math.min(hi, Math.max(lo, parseInt(v(k).value, 10) || d));
+      test.lines = test.lines.map((x, i) => ({on: v(`l${i}.on`).checked, f: v(`l${i}.f`).value, n: int(`l${i}.n`, 2, 400, x.n)}));
+      test.dmi = {on: v("dmi.on").checked, n: int("dmi.n", 3, 200, 14), sm: int("dmi.sm", 2, 100, 14), level: int("dmi.level", 1, 80, 20)};
+      test.signals = v("signals").checked;
+      store.set("testInd", test); renderTest(); rebuild(true); $("#test-menu").classList.remove("open");
+    };
+    $("#test-clear").onclick = () => {
+      test = {lines: test.lines.map(x => ({...x, on: false})), dmi: {...test.dmi, on: false}, signals: false};
+      store.set("testInd", test); renderTest(); rebuild(true); $("#test-menu").classList.remove("open");
+    };
+  }
+  renderTest();
+  $("#test-btn").onclick = e => { e.stopPropagation(); renderTest(); $("#test-menu").classList.toggle("open"); };
+  document.addEventListener("click", e => { if (!e.target.closest("#test-menu")) $("#test-menu").classList.remove("open"); });
   document.addEventListener("click", e => { if (!e.target.closest("#ind-menu")) $("#ind-menu").classList.remove("open"); });
   $$("#c-range button").forEach(b => b.onclick = async () => {
     if (!st.bars.length) return;
