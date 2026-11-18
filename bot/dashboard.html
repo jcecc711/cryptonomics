@@ -182,6 +182,7 @@ td.num, th.num { text-align: right; }
 .draw-layer .hit { stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: move; touch-action: none; }
 .draw-layer .locked .hit { cursor: pointer; }
 .draw-layer .handle { pointer-events: all; cursor: grab; touch-action: none; }
+.draw-layer .auto-tl { pointer-events: none; }
 .draw-layer .dlabel { font-size: 11px; font-weight: 600; paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
 .draw-layer .sel line:not(.hit) { filter: drop-shadow(0 0 2px rgba(124, 92, 255, .45)); }
 @media (pointer: coarse) { .draw-layer .handle { r: 10; } .draw-layer .hit { stroke-width: 22; } }
@@ -458,7 +459,7 @@ td.num, th.num { text-align: right; }
         <div class="legend" id="legend"></div>
         <div id="panes"></div>
       </div>
-      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Colored dots show the strategy's Enter / Exit signals on this timeframe (Enter = DI+ crosses above DI-; Enter (ADX) = ADX rises through 14 with DI+ on top; Exit = DI+ crosses below DI-; toggle under Indicators); bold ▲ / ▼ arrows are trades that actually filled on BTC, including manual buys.</p>
+      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Colored dots show the strategy's Enter / Exit signals on this timeframe (Enter = DI+ crosses above DI-; Enter (ADX) = ADX rises through 14 with DI+ on top; Exit = DI+ crosses below DI-; toggle under Indicators); bold ▲ / ▼ arrows are trades that actually filled on BTC, including manual buys. Dashed red / green lines are automatic trend lines: swing tops joined to tops (resistance) and bottoms to bottoms (support), only while price hasn't closed through them.</p>
     </section>
 
     <!-- WATCHLIST -->
@@ -1251,10 +1252,71 @@ const Charts = (() => {
 
   // width of the plot area (the time scale can report 0 before it has laid out)
   const plotWidth = () => main.chart.timeScale().width() || Math.max(0, main.el.clientWidth - main.chart.priceScale("right").width());
+  // Automatic trend lines: swing tops joined to tops (resistance) and bottoms to bottoms (support).
+  // A swing top / bottom is the highest high / lowest low within PIV candles on each side. For each of
+  // the latest swings, the line reaches back to the earliest earlier swing such that no candle CLOSE has broken
+  // through it, between the swings or since: the longest line still in play. Recomputed only when the candles change.
+  const PIV = 5, LOOK = 400;
+  let autoCache = {key: "", lines: []};
+  function autoLines() {
+    const b = st.bars, n = b.length - 1;                      // the last candle is still forming
+    const key = [st.sym, st.tf, n, b.length ? b[0].t : 0, b.length ? b[n].c : 0].join("|");
+    if (autoCache.key === key) return autoCache.lines;
+    const lines = [];
+    if (n > 3 * PIV + 10) {
+      const lo = Math.max(PIV, n - LOOK), hiPiv = [], loPiv = [];
+      for (let i = lo; i <= n - PIV; i++) {
+        let isH = true, isL = true;
+        for (let k = i - PIV; k <= i + PIV && (isH || isL); k++) {
+          if (k === i) continue;
+          if (b[k].h > b[i].h) isH = false;
+          if (b[k].l < b[i].l) isL = false;
+        }
+        if (isH) hiPiv.push(i);
+        if (isL) loPiv.push(i);
+      }
+      for (const [type, piv, val] of [["res", hiPiv, i => b[i].h], ["sup", loPiv, i => b[i].l]]) {
+        const found = [];
+        for (const j of piv.slice(-4).reverse()) {             // the latest swings first
+          for (const i of piv) {
+            if (i >= j - 2 * PIV) break;
+            const v1 = val(i), v2 = val(j), slope = (v2 - v1) / (j - i);
+            let ok = true;
+            for (let m = i + 1; m <= n && ok; m++) {          // unbroken between the swings and since (still in play)
+              if (m === j) continue;
+              const y = v1 + slope * (m - i);
+              ok = type === "res" ? b[m].c <= y : b[m].c >= y;
+            }
+            if (ok) { found.push({type, i, j, v1, v2, slope}); break; }   // the earliest valid start = the longest line
+          }
+          if (found.length >= 2) break;
+        }
+        // drop near-duplicates (same start)
+        found.filter((x, k) => found.findIndex(y => y.i === x.i) === k).forEach(x => lines.push(x));
+      }
+    }
+    autoCache = {key, lines};
+    return lines;
+  }
+  function autoLinesHtml(W) {
+    if (!store.get("autoTL", true)) return "";
+    const b = st.bars;
+    return autoLines().map(x => {
+      const xa = X(b[x.i].t), xb = X(b[x.j].t), ya = Y(x.v1), yb = Y(x.v2);
+      if ([xa, xb, ya, yb].some(v => v == null)) return "";
+      const k = xb !== xa ? (yb - ya) / (xb - xa) : 0, ye = yb + k * (W - xb);
+      const col = x.type === "res" ? "#e5484d" : "#12a150";
+      const label = x.type === "res" ? "auto resistance" : "auto support";
+      return `<g class="auto-tl"><line x1="${f1(xa)}" y1="${f1(ya)}" x2="${f1(W)}" y2="${f1(ye)}" stroke="${col}" stroke-width="1.5" stroke-dasharray="7 5" opacity=".85"/>
+        <circle cx="${f1(xa)}" cy="${f1(ya)}" r="3" fill="${col}"/><circle cx="${f1(xb)}" cy="${f1(yb)}" r="3" fill="${col}"/>
+        <text class="dlabel" x="${f1(W - 6)}" y="${f1(ye + (x.type === "res" ? -5 : 13))}" text-anchor="end" fill="${col}">${label} ${price(x.v2 + x.slope * (b.length - 1 - x.j))}</text></g>`;
+    }).join("");
+  }
+
   function render() {
     if (!main || !svg || !st.bars.length) return;
     const W = plotWidth(), items = list();
-    let html = "";
+    let html = autoLinesHtml(W);
     for (const x of items) {
       const sel = x.id === selected, col = esc(x.color), w = x.width, da = dash(x.style);
       const ln = (x1, y1, x2, y2, c = col, ww = w, dd = da) => `<line x1="${f1(x1)}" y1="${f1(y1)}" x2="${f1(x2)}" y2="${f1(y2)}" stroke="${c}" stroke-width="${ww}" stroke-dasharray="${dd}" stroke-linecap="round"/>`;
@@ -1415,9 +1477,11 @@ const Charts = (() => {
     $("#ind-pop").innerHTML = `<h4>Your MA + EMA set</h4>` + Object.entries(MA_SET).map(([n, [, , c]]) => box(n, n, c)).join("") +
       `<h4>On the price chart</h4>${box("vol", "Volume")}${box("bb", "Bollinger Bands (20, 2)", "#7c5cff")}` +
       `<label><input type="checkbox" id="sig-toggle" ${store.get("showSig", true) ? "checked" : ""}>Strategy signals (Enter · Exit)<i style="background:#0ca678"></i></label>` +
+      `<label><input type="checkbox" id="autotl-toggle" ${store.get("autoTL", true) ? "checked" : ""}>Auto trend lines (tops · bottoms)<i style="background:#e5484d"></i></label>` +
       `<h4>Panels below</h4>` + Object.entries(PANES).map(([k, n]) => box(k, n)).join("");
     $$("#ind-pop input[data-ind]").forEach(i => i.onchange = () => { i.checked ? inds.add(i.dataset.ind) : inds.delete(i.dataset.ind); store.set("inds", [...inds]); rebuild(true); });
     $("#sig-toggle").onchange = e => { store.set("showSig", e.target.checked); markers(); };
+    $("#autotl-toggle").onchange = e => { store.set("autoTL", e.target.checked); render(); };
   }
   $("#ind-btn").onclick = e => { e.stopPropagation(); $("#ind-menu").classList.toggle("open"); };
   function renderTest() {
