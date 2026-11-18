@@ -624,6 +624,75 @@ class TestShortTracker(unittest.TestCase):
         self.assertEqual(self.store.rows("SELECT * FROM orders"), [])     # nothing is ever placed
 
 
+class TestManualPosition(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = make_cfg(self.tmp.name, strategies=("di", "adx"), paper_start_usd=1000)
+        self.store = Store(self.cfg.db_path)
+        d = synthetic_candles()
+        di = adx(d, 38, 9)
+        down = di.di_plus < di.di_minus
+        self.candles = d.loc[: down[down].index[-1]]          # DI- on top: the rules want no BTC
+        self.clock = Clock()
+        self.client = FakeClient([(0, "100.00", "100.01"), (5, "99.99", "100.00")], self.candles, self.clock)
+
+    def tearDown(self):
+        self.store.db.close()
+        self.tmp.cleanup()
+
+    def run_once(self, sleeves):
+        with FakeTime(self.clock):
+            return run.run_once(self.cfg, self.client, sleeves, self.store)
+
+    def total(self, price=100.0):
+        snap = self.store.rows("SELECT value FROM equity WHERE strategy='total' ORDER BY ts DESC LIMIT 1")
+        return snap[0]["value"]
+
+    def test_buy_is_kept_by_the_rules_and_sell_returns_the_cash(self):
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)                                # funds the two sleeves: 500 + 500
+        with self.store.db:                                   # later runs share this second: keep the first apart
+            self.store.db.execute("UPDATE equity SET ts='2026-01-01 00:00:00'")
+        with FakeTime(self.clock):
+            note = run.manual_buy(self.cfg, self.client, sleeves, self.store, "300")
+        self.assertIn("bought", note)
+        t = self.store.current_trade("manual")
+        self.assertIsNotNone(t)
+        cash = {s.name: float(s.cash) for s in sleeves}
+        self.assertEqual((cash["1d"], cash["adx-1d"]), (350.0, 350.0))   # lent 150 each
+        self.assertEqual(self.store.get("manual.from"), {"1d": 150.0, "adx-1d": 150.0})
+        # the hourly run picks up the manual position and never sells it
+        self.run_once(sleeves)
+        self.run_once(sleeves)
+        self.assertIsNotNone(self.store.current_trade("manual"))
+        self.assertTrue(any(s.kind == "manual" for s in sleeves))
+        self.assertAlmostEqual(self.total(), 1000, delta=1)   # account total includes the manual BTC
+        self.assertIn("Manual position", self.store.get("last_run")["sleeves"]["manual"]["summary"])
+        s = {x["name"]: x for x in web.status(self.cfg, self.store, threading.Lock())["sleeves"]}
+        self.assertEqual((s["manual"]["share"], s["manual"]["start_value"]), (0.0, 300.0))
+        self.assertAlmostEqual(s["1d"]["start_value"], 350.0)
+        with FakeTime(self.clock):
+            note = run.manual_sell(self.cfg, self.client, sleeves, self.store)
+        self.assertIn("sold", note)
+        self.assertIsNone(self.store.current_trade("manual"))
+        self.assertIsNone(self.store.get("manual.cash"))
+        back = {s.name: float(s.cash) for s in sleeves if s.kind != "manual"}
+        self.assertAlmostEqual(back["1d"] + back["adx-1d"], 1000, delta=1)
+        self.assertAlmostEqual(back["1d"], back["adx-1d"], delta=0.02)
+        self.run_once(sleeves)
+        self.assertFalse(any(s.kind == "manual" for s in sleeves))
+        self.assertEqual([r["strategy"] for r in self.store.rows("SELECT strategy FROM trades")], ["manual"])
+
+    def test_limits(self):
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)
+        with self.assertRaises(SystemExit):
+            run.manual_buy(self.cfg, self.client, sleeves, self.store, "5000")       # more than the cash
+        self.cfg.mode = "live"
+        with self.assertRaises(SystemExit):
+            run.manual_buy(self.cfg, self.client, sleeves, self.store, "100")        # practice only
+
+
 class TestEnsemble(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

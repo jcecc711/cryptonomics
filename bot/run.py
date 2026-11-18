@@ -128,7 +128,86 @@ def make(cfg, client=None, store=None):
         broker = live or PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee, cfg.paper_taker_fee,
                                      cfg.paper_start_usd * share, key=f"paper.{name}")
         sleeves.append(Sleeve(name, share, cfg.mode, broker, store, cfg, kind, tf))
+    if store.get(f"{MANUAL}.cash") is not None:          # a manual position is open
+        sleeves.append(manual_sleeve(cfg, client, store, live))
     return client, sleeves, store
+
+
+# -- manual position: bought and sold by hand, never by the rules --------------
+
+MANUAL = "manual"
+
+
+def manual_sleeve(cfg, client, store, live=None):
+    broker = live or PaperBroker(client, cfg.symbol, store, cfg.paper_maker_fee, cfg.paper_taker_fee, 0,
+                                 key=f"paper.{MANUAL}")
+    return Sleeve(MANUAL, 0.0, cfg.mode, broker, store, cfg, kind=MANUAL, tf=MANUAL)
+
+
+def _move_cash(sleeve, amount):
+    """Add (or with a negative amount, take) cash to a paper sleeve and its simulated broker."""
+    sleeve.set_balances(sleeve.cash + amount, sleeve.btc)
+    q = f"paper.{sleeve.name}.quote"
+    sleeve.store.set(q, str(Decimal(sleeve.store.get(q, "0")) + amount))
+
+
+def manual_buy(cfg, client, sleeves, store, usd):
+    """Lend `usd` from the rule sleeves sitting in cash (in proportion to their cash) and buy BTC with it."""
+    if cfg.mode != "paper":
+        raise SystemExit("Manual buys are for the practice account only (BOT_MODE=paper).")
+    fund(sleeves)
+    usd = Decimal(str(usd)).quantize(Decimal("0.01"))
+    rule = [s for s in sleeves if s.kind != MANUAL]
+    if store.current_trade(MANUAL):
+        raise SystemExit("There's already a manual position. Sell it first: python -m bot.run manual-sell")
+    lenders = [s for s in rule if not store.current_trade(s.name) and s.cash > 0]
+    avail = sum((s.cash for s in lenders), Decimal(0))
+    if usd <= 0 or usd > avail:
+        raise SystemExit(f"Choose an amount between 1 and {avail:,.2f} (the cash the sleeves have).")
+    m = next((s for s in sleeves if s.kind == MANUAL), None) or manual_sleeve(cfg, client, store)
+    if store.get(f"{MANUAL}.cash") is None:
+        m.set_balances(Decimal(0), Decimal(0))
+    lent = store.get(f"{MANUAL}.from") or {}
+    left = usd
+    for i, s in enumerate(lenders):
+        part = left if i == len(lenders) - 1 else (usd * s.cash / avail).quantize(Decimal("0.01"))
+        left -= part
+        _move_cash(s, -part)
+        lent[s.name] = float(Decimal(str(lent.get(s.name, 0))) + part)
+    _move_cash(m, usd)
+    store.set(f"{MANUAL}.from", lent)
+    note = m.trade("BUY", None, client.filters(cfg.symbol))
+    log.info("manual buy of %s: %s", usd, note)
+    if not store.current_trade(MANUAL):                  # nothing filled: give the cash back
+        _return_manual_cash(m, rule, store)
+    return note
+
+
+def manual_sell(cfg, client, sleeves, store):
+    m = next((s for s in sleeves if s.kind == MANUAL), None)
+    if m is None:
+        raise SystemExit("There's no manual position.")
+    trade = store.current_trade(MANUAL)
+    note = m.trade("SELL", trade, client.filters(cfg.symbol)) if trade and m.btc > 0 else "nothing to sell"
+    log.info("manual sell: %s", note)
+    if not store.current_trade(MANUAL):
+        _return_manual_cash(m, [s for s in sleeves if s.kind != MANUAL], store)
+    return note
+
+
+def _return_manual_cash(m, rule, store):
+    """Hand the manual position's cash back to the sleeves it came from, in the same proportions."""
+    lent = store.get(f"{MANUAL}.from") or {}
+    total = sum(lent.values())
+    cash, left = m.cash, m.cash
+    named = [s for s in rule if s.name in lent]
+    for i, s in enumerate(named):
+        part = left if i == len(named) - 1 else (cash * Decimal(str(lent[s.name] / total))).quantize(Decimal("0.01"))
+        left -= part
+        _move_cash(s, part)
+    _move_cash(m, -cash)
+    for k in ("cash", "btc", "from"):
+        store.set(f"{MANUAL}.{k}", None)
 
 
 def fund(sleeves):
@@ -141,11 +220,30 @@ def fund(sleeves):
             s.set_balances(quote * Decimal(str(s.share)), Decimal(0))
             log.info("%s sleeve funded with %s (%.0f%% of free balance)", s.name, s.cash, 100 * s.share)
     for s in sleeves:
-        if not s.funded:  # paper: its own simulated balance
+        if not s.funded and s.kind != MANUAL:  # paper: its own simulated balance
             s.set_balances(s.broker.balances()[0], Decimal(0))
 
 
+def trade_lock(cfg):
+    """Held while trading, so a manual command and the hourly run never trade at the same time."""
+    f = open(cfg.data_dir / "trade.lock", "w")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
 def run_once(cfg, client, sleeves, store):
+    with trade_lock(cfg):
+        return _run_once(cfg, client, sleeves, store)
+
+
+def _run_once(cfg, client, sleeves, store):
+    # a manual position opened or closed from the command line since the last run
+    has = any(s.kind == MANUAL for s in sleeves)
+    if store.get(f"{MANUAL}.cash") is not None and not has:
+        live = next((s.broker for s in sleeves if s.mode == "live"), None)
+        sleeves.append(manual_sleeve(cfg, client, store, live))
+    elif store.get(f"{MANUAL}.cash") is None and has:
+        sleeves[:] = [s for s in sleeves if s.kind != MANUAL]
     for broker in {id(s.broker): s.broker for s in sleeves}.values():
         for o in broker.cancel_leftovers():
             log.warning("cancelled leftover order %s (%s, filled %s)", o["orderId"], o["status"], o["executedQty"])
@@ -157,6 +255,9 @@ def run_once(cfg, client, sleeves, store):
     except Exception:
         log.exception("regime check failed; trading without the bear filter this run")
     for s in sleeves:
+        if s.kind == MANUAL:
+            results[s.name] = (None, None, "manual position: sold only by hand")
+            continue
         try:
             results[s.name] = s.step(client, cache)
         except Exception as e:  # one sleeve failing shouldn't stop the others
@@ -172,7 +273,12 @@ def run_once(cfg, client, sleeves, store):
         total_cash, total_btc = total_cash + cash, total_btc + btc
         store.snapshot(ts, s.name, cash, btc, price)
         sig, action, note = results[s.name]
-        text = s.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
+        if s.kind == MANUAL:
+            t = store.current_trade(s.name)
+            text = (f"Manual position: {t['qty']:.6f} BTC since {t['entry_time'][:16]} at {t['entry_price']:,.0f} "
+                    f"({price / t['entry_price'] - 1:+.1%})." if t else "Manual position: cash only.")
+        else:
+            text = s.summary(sig, store.current_trade(s.name), price) if sig else "No reading this run."
         report[s.name] = {"summary": text, "note": note, "mode": s.mode, "share": s.share}
         log.info("[%s/%s] %s %s", s.name, s.mode, text, note)
     store.snapshot(ts, "total", total_cash, total_btc, price)
@@ -260,6 +366,20 @@ def main(argv=None):
         ok = notify.send(cfg, f"test ({cfg.mode})", "Alerts are working. You'll get one for every "
                          "trade, a regime change, or a problem.", tags=("white_check_mark",))
         print(f"sent via {', '.join(on)}" if ok else "failed: see the log line(s) above")
+        return
+    if cmd in ("manual-buy", "manual-sell"):
+        with trade_lock(cfg):
+            client, sleeves, store = make(cfg, client, store)   # fresh view inside the lock
+            if cmd == "manual-buy":
+                if len(argv) < 2:
+                    raise SystemExit("Usage: python -m bot.run manual-buy <dollars>, e.g. manual-buy 2000")
+                note = manual_buy(cfg, client, sleeves, store, argv[1].replace("$", "").replace(",", ""))
+                t = store.current_trade(MANUAL)
+                notify.send(cfg, f"Manual BUY ({cfg.mode.upper()})", note, priority="high", tags=("hand",))
+            else:
+                note = manual_sell(cfg, client, sleeves, store)
+                notify.send(cfg, f"Manual SELL ({cfg.mode.upper()})", note, priority="high", tags=("hand",))
+        print(note)
         return
     if cmd == "status":
         last = store.get("last_run")

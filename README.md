@@ -37,6 +37,8 @@ markets. It gives up growth in strong bull runs.
     python -m bot.run loop          # keep running: 5 minutes past every hour
     python -m bot.run web           # dashboard app at http://127.0.0.1:8080
     python -m bot.run status
+    python -m bot.run manual-buy 2000     # practice only: buy $2,000 of BTC by hand
+    python -m bot.run manual-sell         # sell the manual position, cash goes back to the sleeves
 
 - **Paper mode** (default) simulates orders against the live Binance.US order
   book, starting with `BOT_PAPER_START_USD` split equally between the sleeves.
@@ -62,6 +64,11 @@ markets. It gives up growth in strong bull runs.
   the 4h DI+ crosses back above DI-; `bench/mtf_switch.py`). No orders: it marks
   the short every hour with estimated fees and funding, alerts on open / close,
   and shows on the dashboard and in `status`.
+- **Manual position** (practice account): `manual-buy <dollars>` borrows that much
+  cash from the sleeves sitting in cash (in proportion to their cash) and buys BTC
+  against the live book. The rules never sell it; `manual-sell` sells it and hands
+  the cash back in the same proportions. It counts in the account total and shows
+  as its own card on the dashboard.
 - **Kill switch:** `touch data/STOP` blocks all new orders; delete it to resume.
 - **Dashboard app:** overview (account vs. holding BTC, sleeves with DI gauges and
   candle-close countdowns, performance), charts (candles / Heikin Ashi, zoom and

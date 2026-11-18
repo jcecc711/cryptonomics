@@ -222,7 +222,9 @@ def market_regime(cfg, client):
 def status(cfg, store, lock):
     with lock:
         sleeves, specs = [], cfg.sleeve_specs()
-        for name, kind, tf in specs:
+        lent = store.get("manual.from") or {}           # cash lent to a manual position, by sleeve
+        rows = list(specs) + ([("manual", "manual", "manual")] if store.get("manual.cash") is not None else [])
+        for name, kind, tf in rows:
             eq = store.rows("SELECT ts, value, cash, btc, price FROM equity WHERE strategy=? ORDER BY ts", name)
             trade = store.current_trade(name)
             since = None   # when this sleeve's cash went to cash, and the BTC price then
@@ -235,9 +237,12 @@ def status(cfg, store, lock):
                     since = {"time": eq[0]["ts"], "price": eq[0]["price"], "how": "started"}
             sleeves.append({
                 "cash_since": since,
-                "name": name, "kind": kind, "tf": tf, "share": 1 / len(specs),
+                "name": name, "kind": kind, "tf": tf, "share": 0.0 if kind == "manual" else 1 / len(specs),
                 "trade": trade,
-                "last": eq[-1] if eq else None, "start_value": eq[0]["value"] if eq else None,
+                "last": eq[-1] if eq else None,
+                # starting value net of cash lent to (or borrowed by) the manual position
+                "start_value": (sum(lent.values()) if kind == "manual" else
+                                (eq[0]["value"] - lent.get(name, 0)) if eq else None),
                 "signals": store.rows("SELECT * FROM signals WHERE strategy=? ORDER BY candle_time DESC LIMIT 20",
                                       name),
             })

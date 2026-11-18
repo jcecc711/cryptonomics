@@ -212,6 +212,7 @@ td.num, th.num { text-align: right; }
   border-radius: 14px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
 .bp .big { font-size: 20px; font-weight: 800; }
 .bp .lab { font-weight: 700; }
+.kind.k-manual { background: var(--g4); color: #fff; }
 .sh-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
 .sh-grid b { font-size: 15px; }
 .tag.stock { background: var(--chip); color: var(--muted); }
@@ -646,8 +647,9 @@ function renderOverview() {
   const px = live.price || (s.equity.at(-1) || {}).price;
   let total = 0, inBtc = 0, start = 0, openPl = 0;
   s.sleeves.forEach(sl => {
-    const cash = sl.last ? sl.last.cash : null, btc = sl.last ? sl.last.btc : 0;
-    const val = sl.last ? cash + btc * px : null;
+    let cash = sl.last ? sl.last.cash : null, btc = sl.last ? sl.last.btc : 0;
+    if (sl.kind === "manual" && sl.trade && !(sl.last && sl.last.btc)) { cash = cash || 0; btc = sl.trade.qty; }   // bought since the last hourly run
+    const val = cash != null ? cash + btc * px : null;
     sl._val = val; total += val || 0; inBtc += (btc || 0) * px; start += sl.start_value || 0;
     if (sl.trade) openPl += sl.trade.qty * px - sl.trade.cost_usd;
   });
@@ -668,7 +670,19 @@ function renderOverview() {
   $("#k-trades-s").textContent = closed.length ? `${Math.round(100 * wins / closed.length)}% winners · ${s.trades.length - closed.length} open` : `${s.trades.length} open`;
 
   const now = Date.now() / 1000;
+  const manualCard = sl => {
+    const t = sl.trade, open = t ? px / t.entry_price - 1 : null, pl = t ? t.qty * px - t.cost_usd : null;
+    return `<div class="panel sleeve">
+      <div class="head"><span class="tf">Manual</span><span class="kind k-manual">YOU</span><span class="pill ${t ? "hold" : ""}">${t ? "Holding BTC" : "Cash"}</span></div>
+      <div class="row"><span class="l">Bought</span><span>${t ? `${t.qty.toFixed(6)} BTC at ${price(t.entry_price)}` : "–"}</span></div>
+      <div class="row"><span class="l">When</span><span>${t ? new Date(toSec(t.entry_time) * 1000).toLocaleString() : "–"}</span></div>
+      <div class="row"><span class="l">Value</span><span>${usd(sl._val)}</span></div>
+      <div class="row"><span class="l">Open P/L</span><span>${t ? `<span class="${cls(pl)}">${usd(pl)} (${pct(open)})</span>` : "–"}</span></div>
+      <div class="note">Bought by hand with cash lent by the sleeves. The rules never sell it: <code>python -m bot.run manual-sell</code> sells it and returns the cash.</div>
+    </div>`;
+  };
   const card = sl => {
+    if (sl.kind === "manual") return manualCard(sl);
     const {r, st} = sleeveState(sl);
     const sec = TF_SEC[sl.tf], next = Math.ceil(now / sec) * sec;
     const share = r.di_plus != null ? 100 * r.di_plus / (r.di_plus + r.di_minus) : 50;
@@ -690,13 +704,14 @@ function renderOverview() {
       ${note ? `<div class="note">${esc(note)}</div>` : ""}
     </div>`;
   };
-  const GROUPS = {di: ["DI crossover", "buys when DI+ crosses above DI-"], adx: ["ADX-14 trigger", "buys when ADX rises through 14 with DI+ on top"]};
+  const GROUPS = {di: ["DI crossover", "buys when DI+ crosses above DI-"], adx: ["ADX-14 trigger", "buys when ADX rises through 14 with DI+ on top"],
+    manual: ["Manual position", "your own buy; only you sell it"]};
   const kinds = [...new Set(s.sleeves.map(x => x.kind || "di"))];
   $("#sleeves").innerHTML = kinds.map(k => {
     const list = s.sleeves.filter(x => (x.kind || "di") === k), pctShare = Math.round(100 * list.reduce((a, x) => a + x.share, 0));
     const val = list.reduce((a, x) => a + (x._val || 0), 0), start = list.reduce((a, x) => a + (x.start_value || 0), 0);
     const r = start ? val / start - 1 : null;
-    return `<div class="grp">${GROUPS[k][0]} <small>${pctShare}% of account · ${usd(val)} <span class="${cls(r)}">${r == null ? "" : pct(r)}</span> · ${GROUPS[k][1]}</small></div>` + list.map(card).join("");
+    return `<div class="grp">${GROUPS[k][0]} <small>${k === "manual" ? "" : pctShare + "% of account · "} ${usd(val)} <span class="${cls(r)}">${r == null ? "" : pct(r)}</span> · ${GROUPS[k][1]}</small></div>` + list.map(card).join("");
   }).join("");
 
   const pf = perfStats(closed);
