@@ -1045,6 +1045,24 @@ class TestDashboard(unittest.TestCase):
         s = {x["name"]: x for x in web.status(cfg, store, threading.Lock())["sleeves"]}
         self.assertIsNone(s["1d"]["cash_since"])                  # holding BTC: no buying-power reference
 
+    def test_portfolio_periods(self):
+        url = self.serve()
+        r = self.get(url + "/api/portfolio?symbol=BTCUSDT")
+        keys = [p["key"] for p in r["periods"]]
+        self.assertEqual(keys[:3], ["1W", "1M", "YTD"])
+        self.assertEqual(keys[-1], "2020")
+        self.assertEqual(r["unit"], "BTC")
+        for p in r["periods"]:
+            s, h = p["strategy"], p["hold"]
+            if s:   # stack = what the strategy's dollars buy at the end vs the same dollars at the start
+                self.assertAlmostEqual(1 + s["stack"], (1 + s["ret"]) / (1 + h["ret"]), places=9)
+                self.assertAlmostEqual(s["usd"], 10000 * s["ret"], places=6)
+        self.assertTrue(any(p["strategy"] for p in r["periods"]))
+        st = self.get(url + "/api/portfolio?symbol=AAPL")
+        self.assertEqual((st["unit"], st["name"]), ("AAPL", "Apple Inc."))
+        self.assertTrue(any(p["strategy"] for p in st["periods"]))
+        self.get(url + "/api/portfolio?symbol=BAD!", expect=400)
+
     def test_price(self):
         url = self.serve()
         self.assertEqual(self.get(url + "/api/price?symbol=ETHUSDT")["price"], 100.0)

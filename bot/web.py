@@ -13,6 +13,8 @@ Endpoints (all behind DASHBOARD_PASSWORD when set, any username):
     POST /api/watchlist         {"symbols": [...]} replace the list; a coin pair (SOLUSDT) or a
                                 US stock ticker (AAPL), checked against Binance.US / Yahoo
     GET  /api/symbols           coins tradable on Binance.US (USDT / USD / USDC quotes)
+    GET  /api/portfolio         ?symbol=BTCUSDT  gains / losses by period (1W, 1M, YTD, each year
+                                to 2020): the practice account, the rules simulated on history, holding
 
 Anything that isn't a Binance.US pair is treated as a US stock ticker (see stocks.py).
 
@@ -31,6 +33,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bench.indicators import adx, ema, rma, sma
 
+from . import portfolio as portfolio_mod
 from . import regime as regime_mod
 from . import stocks
 from .binanceus import BinanceUS
@@ -214,6 +217,17 @@ def watchlist(cfg, store, client, lock):
     return {"symbols": rows, "timeframes": list(ANALYSIS_TFS), "stock_timeframes": list(stocks.ANALYSIS_TFS)}
 
 
+class LockedStore:
+    """The store's read used by the portfolio view, under the dashboard's store lock."""
+
+    def __init__(self, store, lock):
+        self.store, self.lock = store, lock
+
+    def rows(self, *a):
+        with self.lock:
+            return self.store.rows(*a)
+
+
 def market_regime(cfg, client):
     """Fresh regime readings for the dashboard (the bot stores its own each run)."""
     return _cache.get(("regime", cfg.symbol), 300, lambda: regime_mod.assess(client.klines(cfg.symbol, "1d")))
@@ -259,6 +273,7 @@ def status(cfg, store, lock):
             "sleeves": sleeves,
             "equity": total[-2000:],
             "start": total[0] if total else None,      # the account's first reading, for gains since the start
+            "watchlist": store.get("watchlist") or DEFAULT_WATCHLIST,
             "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
             "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),
             "settings": {"mode": cfg.mode, "symbol": cfg.symbol, "timeframes": list(cfg.timeframes),
@@ -350,6 +365,9 @@ def make_handler(cfg, store, client):
                                             "change": float(t["priceChangePercent"]), "time": time.time()})
                 if url.path == "/api/watchlist":
                     return self._send(200, watchlist(cfg, store, client, lock))
+                if url.path == "/api/portfolio":
+                    s, stock = self._symbol(q)
+                    return self._send(200, portfolio_mod.portfolio(client, LockedStore(store, lock), cfg, s, stock))
                 if url.path == "/api/symbols":
                     return self._send(200, tradable(client))
                 return self._send(404, {"error": "not found"})
