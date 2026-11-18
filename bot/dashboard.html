@@ -446,7 +446,7 @@ td.num, th.num { text-align: right; }
         <div class="legend" id="legend"></div>
         <div id="panes"></div>
       </div>
-      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Buy ▲ / sell ▼ markers show the bot's trades on BTC.</p>
+      <p class="note">Scroll or drag to pan, pinch or scroll-wheel to zoom; older candles load automatically as you scroll left. Drag the bar under any chart to resize it. Click a drawing to select it: drag the line to move it or its end points to resize, and use its toolbar for color, thickness, style, extend, lock and delete. Colored dots show what the strategy's rules say on this timeframe (DI buy, ADX buy, sell; toggle under Indicators); bold ▲ / ▼ arrows are trades that actually filled on BTC, including manual buys.</p>
     </section>
 
     <!-- WATCHLIST -->
@@ -1121,16 +1121,31 @@ const Charts = (() => {
       const el = p.el.querySelector(".vals"); if (el) el.innerHTML = txt; });
   }
 
+  // What the rules say on this chart's timeframe: the DI sleeve's buys, the ADX sleeve's buys and the shared
+  // sell, on closed candles, whether or not a trade happened (e.g. while the cash was lent to a manual buy).
+  function strategySignals() {
+    const b = st.bars, n = b.length - 1;            // the last candle is still forming
+    if (n < 120) return [];
+    const d = Ind.dmi(b.map(x => x.h), b.map(x => x.l), b.map(x => x.c), 38, 9), out = [];
+    for (let i = 100; i < n; i++) {                  // skip the indicator warm-up
+      const up = d.p[i] > d.m[i], was = d.p[i - 1] > d.m[i - 1];
+      if (up && !was) out.push({time: b[i].t, position: "belowBar", color: "#0ca678", shape: "circle", text: "DI buy"});
+      if (!up && was) out.push({time: b[i].t, position: "aboveBar", color: "#f76707", shape: "circle", text: "sell"});
+      if (up && d.adx[i] > 14 && d.adx[i - 1] <= 14) out.push({time: b[i].t, position: "belowBar", color: "#7048e8", shape: "circle", text: "ADX buy"});
+    }
+    return out;
+  }
   function markers() {
     if (!main || !S.status || !st.bars.length) return;
-    if (st.sym !== S.status.symbol) { main.series.price.setMarkers([]); return; }
-    const first = st.bars[0].t, snap = t => { let lo = 0, hi = st.bars.length - 1; if (t < first) return null;
-      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (st.bars[mid].t <= t) lo = mid; else hi = mid - 1; } return st.bars[lo].t; };
-    const m = [];
-    S.status.trades.forEach(tr => {
-      const a = snap(toSec(tr.entry_time)); if (a != null) m.push({time: a, position: "belowBar", color: "#12a150", shape: "arrowUp", text: tr.strategy});
-      if (tr.exit_time) { const b = snap(toSec(tr.exit_time)); if (b != null) m.push({time: b, position: "aboveBar", color: "#e5484d", shape: "arrowDown", text: tr.strategy}); }
-    });
+    const m = store.get("showSig", true) ? strategySignals() : [];
+    if (st.sym === S.status.symbol) {                // real fills: the bot's trades and manual buys (bold arrows)
+      const first = st.bars[0].t, snap = t => { let lo = 0, hi = st.bars.length - 1; if (t < first) return null;
+        while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (st.bars[mid].t <= t) lo = mid; else hi = mid - 1; } return st.bars[lo].t; };
+      S.status.trades.forEach(tr => {
+        const a = snap(toSec(tr.entry_time)); if (a != null) m.push({time: a, position: "belowBar", color: "#12a150", shape: "arrowUp", text: "BOUGHT " + tr.strategy});
+        if (tr.exit_time) { const x = snap(toSec(tr.exit_time)); if (x != null) m.push({time: x, position: "aboveBar", color: "#e5484d", shape: "arrowDown", text: "SOLD " + tr.strategy}); }
+      });
+    }
     main.series.price.setMarkers(m.sort((x, y) => x.time - y.time));
   }
 
@@ -1358,8 +1373,10 @@ const Charts = (() => {
     const box = (id, label, col) => `<label><input type="checkbox" data-ind="${id}" ${inds.has(id) ? "checked" : ""}>${label}${col ? `<i style="background:${col}"></i>` : ""}</label>`;
     $("#ind-pop").innerHTML = `<h4>Your MA + EMA set</h4>` + Object.entries(MA_SET).map(([n, [, , c]]) => box(n, n, c)).join("") +
       `<h4>On the price chart</h4>${box("vol", "Volume")}${box("bb", "Bollinger Bands (20, 2)", "#7c5cff")}` +
+      `<label><input type="checkbox" id="sig-toggle" ${store.get("showSig", true) ? "checked" : ""}>Strategy signals (DI buy · ADX buy · sell)<i style="background:#0ca678"></i></label>` +
       `<h4>Panels below</h4>` + Object.entries(PANES).map(([k, n]) => box(k, n)).join("");
-    $$("#ind-pop input").forEach(i => i.onchange = () => { i.checked ? inds.add(i.dataset.ind) : inds.delete(i.dataset.ind); store.set("inds", [...inds]); rebuild(true); });
+    $$("#ind-pop input[data-ind]").forEach(i => i.onchange = () => { i.checked ? inds.add(i.dataset.ind) : inds.delete(i.dataset.ind); store.set("inds", [...inds]); rebuild(true); });
+    $("#sig-toggle").onchange = e => { store.set("showSig", e.target.checked); markers(); };
   }
   $("#ind-btn").onclick = e => { e.stopPropagation(); $("#ind-menu").classList.toggle("open"); };
   document.addEventListener("click", e => { if (!e.target.closest("#ind-menu")) $("#ind-menu").classList.remove("open"); });
