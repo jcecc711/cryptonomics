@@ -39,6 +39,7 @@ markets. It gives up growth in strong bull runs.
     python -m bot.run status
     python -m bot.run manual-buy 2000     # practice only: buy $2,000 of BTC by hand ("all" = all the cash)
     python -m bot.run manual-sell         # sell the manual position, cash goes back to the sleeves
+    python -m bot.run manual-stop 62000   # sell it if a 1h candle closes below 62,000 ("off" removes)
 
 - **Paper mode** (default) simulates orders against the live Binance.US order
   book, starting with `BOT_PAPER_START_USD` split equally between the sleeves.

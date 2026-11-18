@@ -679,7 +679,8 @@ function renderOverview() {
       <div class="row"><span class="l">When</span><span>${t ? new Date(toSec(t.entry_time) * 1000).toLocaleString() : "–"}</span></div>
       <div class="row"><span class="l">Value</span><span>${usd(sl._val)}</span></div>
       <div class="row"><span class="l">Open P/L</span><span>${t ? `<span class="${cls(pl)}">${usd(pl)} (${pct(open)})</span>` : "–"}</span></div>
-      <div class="note">Bought by hand with cash lent by the sleeves. The rules never sell it: <code>python -m bot.run manual-sell</code> sells it and returns the cash.</div>
+      <div class="row"><span class="l">Stop</span><span>${sl.stop ? `${price(sl.stop)} <span class="muted">(${pct(sl.stop / px - 1)} away; 1h close)</span>` : "none"}</span></div>
+      <div class="note">Bought by hand with cash lent by the sleeves. The rules never sell it; ${sl.stop ? "the stop sells it if a 1-hour candle closes below the stop price, or" : ""} <code>python -m bot.run manual-sell</code> sells it and returns the cash.</div>
     </div>`;
   };
   const card = sl => {

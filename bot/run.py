@@ -209,8 +209,25 @@ def _return_manual_cash(m, rule, store):
         left -= part
         _move_cash(s, part)
     _move_cash(m, -cash)
-    for k in ("cash", "btc", "from"):
+    for k in ("cash", "btc", "from", "stop"):
         store.set(f"{MANUAL}.{k}", None)
+
+
+def manual_stop_check(cfg, client, sleeves, store):
+    """Sell the manual position if the last closed 1h candle closed below its stop price."""
+    stop = store.get(f"{MANUAL}.stop")
+    if not stop or not store.current_trade(MANUAL):
+        return None
+    h1 = client.klines(cfg.symbol, "1h", limit=3)
+    close, when = float(h1.close.iloc[-1]), h1.index[-1]
+    if close >= stop:
+        return None
+    note = manual_sell(cfg, client, sleeves, store)
+    msg = f"Stop hit: the 1h candle from {when:%Y-%m-%d %H:%M} UTC closed at {close:,.2f}, below {stop:,.2f}. {note}"
+    log.warning("manual position %s", msg)
+    notify.send(cfg, f"Manual STOP sold ({cfg.mode.upper()})", msg, priority="high", tags=("warning",))
+    sleeves[:] = [s for s in sleeves if s.kind != MANUAL]
+    return msg
 
 
 def fund(sleeves):
@@ -257,9 +274,16 @@ def _run_once(cfg, client, sleeves, store):
         cache["regime"] = regime.assess(cache[("candles", "1d")])
     except Exception:
         log.exception("regime check failed; trading without the bear filter this run")
+    try:
+        stopped = manual_stop_check(cfg, client, sleeves, store)
+    except Exception:
+        log.exception("manual stop check failed this run")
+        stopped = None
     for s in sleeves:
         if s.kind == MANUAL:
-            results[s.name] = (None, None, "manual position: sold only by hand")
+            stop = store.get(f"{MANUAL}.stop")
+            results[s.name] = (None, None, f"manual position: stop at {stop:,.0f} (1h close)" if stop
+                               else "manual position: sold only by hand")
             continue
         try:
             results[s.name] = s.step(client, cache)
@@ -370,6 +394,20 @@ def main(argv=None):
                          "trade, a regime change, or a problem.", tags=("white_check_mark",))
         print(f"sent via {', '.join(on)}" if ok else "failed: see the log line(s) above")
         return
+    if cmd == "manual-stop":
+        if len(argv) < 2:
+            raise SystemExit("Usage: python -m bot.run manual-stop <price | off>, e.g. manual-stop 62000")
+        if not store.current_trade(MANUAL):
+            raise SystemExit("There's no manual position to put a stop on.")
+        if argv[1].lower() == "off":
+            store.set(f"{MANUAL}.stop", None)
+            print("Stop removed: the manual position is sold only by hand.")
+        else:
+            stop = float(argv[1].replace("$", "").replace(",", ""))
+            store.set(f"{MANUAL}.stop", stop)
+            print(f"Stop set: the manual position is sold if a 1h candle closes below {stop:,.2f} "
+                  "(checked every hour at :05).")
+        return
     if cmd in ("manual-buy", "manual-sell"):
         with trade_lock(cfg):
             client, sleeves, store = make(cfg, client, store)   # fresh view inside the lock
@@ -392,6 +430,8 @@ def main(argv=None):
             print(f"[{name} {r['mode']} {r['share']:.0%}] {r['summary']}")
         for s in sleeves:
             print(f"{s.name}: cash {s.cash:.2f}, BTC {s.btc}")
+        if store.get(f"{MANUAL}.stop"):
+            print(f"manual stop: sells if a 1h candle closes below {store.get(f'{MANUAL}.stop'):,.2f}")
         st = store.get(shorts.KEY)
         if st:
             pos = st["open"]

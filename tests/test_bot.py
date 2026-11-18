@@ -694,6 +694,29 @@ class TestManualPosition(unittest.TestCase):
         self.assertTrue(all(float(s.cash) == 0 for s in sleeves if s.kind != "manual"))
         self.assertGreater(self.store.current_trade("manual")["qty"], 9.9)    # ~1000 / 100
 
+    def test_stop_sells_on_a_close_below_and_not_above(self):
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)
+        with FakeTime(self.clock):
+            run.manual_buy(self.cfg, self.client, sleeves, self.store, "all")
+        last = float(self.candles.close.iloc[-1])            # the fake client serves these for 1h too
+        self.store.set("manual.stop", last * 0.9)            # close is above the stop: keep
+        self.run_once(sleeves)
+        self.assertIsNotNone(self.store.current_trade("manual"))
+        self.assertIn("stop at", self.store.get("last_run")["sleeves"]["manual"]["note"])
+        s = {x["name"]: x for x in web.status(self.cfg, self.store, threading.Lock())["sleeves"]}
+        self.assertAlmostEqual(s["manual"]["stop"], last * 0.9)
+        sent = []
+        self.store.set("manual.stop", last * 1.1)            # close is below the stop: sell
+        with unittest.mock.patch("bot.notify.send", lambda cfg, title, msg, *a, **k: sent.append(title)):
+            self.run_once(sleeves)
+        self.assertIsNone(self.store.current_trade("manual"))
+        self.assertIsNone(self.store.get("manual.stop"))
+        self.assertFalse(any(x.kind == "manual" for x in sleeves))
+        self.assertTrue(any("STOP" in t for t in sent), sent)
+        self.assertAlmostEqual(sum(float(x.cash) for x in sleeves), 1000, delta=2)   # cash back with the sleeves
+        self.run_once(sleeves)                                # and the next run is normal
+
     def test_limits(self):
         _, sleeves, _ = run.make(self.cfg, self.client, self.store)
         self.run_once(sleeves)
