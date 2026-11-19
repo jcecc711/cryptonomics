@@ -10,6 +10,7 @@ runs on each timeframe in BOT_TIMEFRAMES (4h, 8h, 12h, 1d), each pair as a
 sleeve with an equal share of the money and its own cash and BTC. Paper is the default.
 Create data/STOP to stop all new orders.
 """
+import dataclasses
 import fcntl
 import logging
 import sys
@@ -162,16 +163,18 @@ def manual_sleeve(cfg, client, store, live=None):
 
 
 def _move_cash(sleeve, amount):
-    """Add (or with a negative amount, take) cash to a paper sleeve and its simulated broker."""
+    """Add (or with a negative amount, take) cash to a sleeve's book; in paper also its simulated broker."""
     sleeve.set_balances(sleeve.cash + amount, sleeve.btc)
-    q = f"paper.{sleeve.name}.quote"
-    sleeve.store.set(q, str(Decimal(sleeve.store.get(q, "0")) + amount))
+    if sleeve.mode == "paper":
+        q = f"paper.{sleeve.name}.quote"
+        sleeve.store.set(q, str(Decimal(sleeve.store.get(q, "0")) + amount))
 
 
-def manual_buy(cfg, client, sleeves, store, usd):
-    """Lend `usd` from the rule sleeves sitting in cash (in proportion to their cash) and buy BTC with it."""
-    if cfg.mode != "paper":
-        raise SystemExit("Manual buys are for the practice account only (BOT_MODE=paper).")
+def manual_buy(cfg, client, sleeves, store, usd, maker_only=True, wait_min=30):
+    """Lend `usd` from the rule sleeves sitting in cash (in proportion to their cash) and buy BTC with it.
+
+    maker_only: post at the best bid and re-post as the market moves, for up to wait_min minutes, and never
+    cross the spread (0% fee, no spread). Whatever doesn't fill goes back to the sleeves."""
     fund(sleeves)
     rule = [s for s in sleeves if s.kind != MANUAL]
     if str(usd).lower() == "all":   # every sleeve's cash
@@ -184,7 +187,8 @@ def manual_buy(cfg, client, sleeves, store, usd):
     avail = sum((s.cash for s in lenders), Decimal(0))
     if usd <= 0 or usd > avail:
         raise SystemExit(f"Choose an amount between 1 and {avail:,.2f} (the cash the sleeves have).")
-    m = next((s for s in sleeves if s.kind == MANUAL), None) or manual_sleeve(cfg, client, store)
+    live = next((s.broker for s in rule if s.mode == "live"), None)
+    m = next((s for s in sleeves if s.kind == MANUAL), None) or manual_sleeve(cfg, client, store, live)
     if store.get(f"{MANUAL}.cash") is None:
         m.set_balances(Decimal(0), Decimal(0))
     lent = store.get(f"{MANUAL}.from") or {}
@@ -196,11 +200,34 @@ def manual_buy(cfg, client, sleeves, store, usd):
         lent[s.name] = float(Decimal(str(lent.get(s.name, 0))) + part)
     _move_cash(m, usd)
     store.set(f"{MANUAL}.from", lent)
+    # a deliberate one-off buy: the per-sleeve order cap doesn't apply; maker-only unless told otherwise
+    m.cfg = dataclasses.replace(cfg, max_order_usd=float(usd) + 1, taker_fallback=not maker_only,
+                                maker_timeout_min=wait_min if maker_only else cfg.maker_timeout_min)
     note = m.trade("BUY", None, client.filters(cfg.symbol))
+    m.cfg = cfg
     log.info("manual buy of %s: %s", usd, note)
     if not store.current_trade(MANUAL):                  # nothing filled: give the cash back
         _return_manual_cash(m, rule, store)
+    elif m.cash > 1:                                     # part filled: the unspent cash goes back too
+        left = m.cash
+        note += f"; {left:,.2f} not spent went back to the sleeves"
+        _return_part(m, rule, store, left)
     return note
+
+
+def _return_part(m, rule, store, amount):
+    """Give `amount` of the manual position's cash back to its lenders, in proportion to what they lent."""
+    lent = store.get(f"{MANUAL}.from") or {}
+    total = sum(lent.values())
+    named = [s for s in rule if s.name in lent]
+    left = amount
+    for i, s in enumerate(named):
+        part = left if i == len(named) - 1 else (amount * Decimal(str(lent[s.name] / total))).quantize(Decimal("0.01"))
+        left -= part
+        _move_cash(s, part)
+        lent[s.name] = float(Decimal(str(lent[s.name])) - part)
+    _move_cash(m, -amount)
+    store.set(f"{MANUAL}.from", lent)
 
 
 def manual_sell(cfg, client, sleeves, store):
@@ -475,8 +502,14 @@ def main(argv=None):
             client, sleeves, store = make(cfg, client, store)   # fresh view inside the lock
             if cmd == "manual-buy":
                 if len(argv) < 2:
-                    raise SystemExit("Usage: python -m bot.run manual-buy <dollars | all>, e.g. manual-buy 2000")
-                note = manual_buy(cfg, client, sleeves, store, argv[1].replace("$", "").replace(",", ""))
+                    raise SystemExit("Usage: python -m bot.run manual-buy <dollars | all> [--now] [--wait MINUTES]\n"
+                                     "  default: maker-only at the best bid (no spread, 0% fee), re-posted for up to 30 min\n"
+                                     "  --now: after the wait, cross the spread for whatever hasn't filled")
+                wait = int(argv[argv.index("--wait") + 1]) if "--wait" in argv else 30
+                if cfg.mode == "live":
+                    print(f"LIVE: buying with real money ({argv[1]}), maker-only for up to {wait} min...")
+                note = manual_buy(cfg, client, sleeves, store, argv[1].replace("$", "").replace(",", ""),
+                                  maker_only="--now" not in argv, wait_min=wait)
                 t = store.current_trade(MANUAL)
                 notify.send(cfg, f"Manual BUY ({cfg.mode.upper()})", note, priority="high", tags=("hand",))
             else:

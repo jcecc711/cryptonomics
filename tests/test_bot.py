@@ -770,9 +770,99 @@ class TestManualPosition(unittest.TestCase):
         self.run_once(sleeves)
         with self.assertRaises(SystemExit):
             run.manual_buy(self.cfg, self.client, sleeves, self.store, "5000")       # more than the cash
-        self.cfg.mode = "live"
-        with self.assertRaises(SystemExit):
-            run.manual_buy(self.cfg, self.client, sleeves, self.store, "100")        # practice only
+
+
+class FakeLiveExchange(FakeClient):
+    """A signed-in exchange: real-account balances, LIMIT_MAKER / IOC orders, and a fixed amount of
+    BTC for sale at the bid (so a maker-only order can fill partly)."""
+
+    def __init__(self, candles, clock, usdt="2500", liquidity="0.02"):
+        super().__init__([(0, "100.00", "100.01")], candles, clock)
+        self.bal = {"USDT": D(usdt), "BTC": D(0)}
+        self.liquidity, self.orders, self.ids = D(liquidity), {}, 0
+
+    def balances(self):
+        return dict(self.bal)
+
+    def new_order(self, symbol, side, type_, qty, price=None, tif=None, client_id=None):
+        self.ids += 1
+        o = {"orderId": self.ids, "clientOrderId": client_id, "side": side, "type": type_, "tif": tif,
+             "origQty": str(qty), "price": str(price), "status": "NEW", "executedQty": "0", "cummulativeQuoteQty": "0"}
+        self.orders[self.ids] = o
+        return dict(o)
+
+    def get_order(self, symbol, oid):
+        o = self.orders[oid]
+        if o["status"] in ("NEW", "PARTIALLY_FILLED") and o["side"] == "BUY":
+            want = D(o["origQty"]) - D(o["executedQty"])
+            got = min(want, self.liquidity)
+            if got > 0:
+                self.liquidity -= got
+                px = D(o["price"])
+                o["executedQty"] = str(D(o["executedQty"]) + got)
+                o["cummulativeQuoteQty"] = str(D(o["cummulativeQuoteQty"]) + got * px)
+                self.bal["USDT"] -= got * px
+                self.bal["BTC"] += got
+                o["status"] = "FILLED" if D(o["executedQty"]) >= D(o["origQty"]) else "PARTIALLY_FILLED"
+        return dict(o)
+
+    def cancel(self, symbol, oid):
+        o = self.orders[oid]
+        if o["status"] not in ("FILLED",):
+            o["status"] = "CANCELED"
+
+    def open_orders(self, symbol):
+        return []
+
+    def my_trades(self, symbol, oid):
+        return []
+
+
+class TestLiveManualBuy(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = make_cfg(self.tmp.name, mode="live", api_key="k", api_secret="s", strategies=("di", "adx"),
+                            max_order_usd=320)
+        self.store = Store(self.cfg.db_path)
+        d = synthetic_candles()
+        di = adx(d, 38, 9)
+        down = di.di_plus < di.di_minus
+        self.candles = d.loc[: down[down].index[-1]]           # the rules want no BTC
+        self.clock = Clock()
+
+    def tearDown(self):
+        self.store.db.close()
+        self.tmp.cleanup()
+
+    def buy(self, ex, **kw):
+        with FakeTime(self.clock):
+            _, sleeves, _ = run.make(self.cfg, ex, self.store)
+            run.run_once(self.cfg, ex, sleeves, self.store)       # funds the sleeves from the real balance
+            note = run.manual_buy(self.cfg, ex, sleeves, self.store, "all", **kw)
+        return note, sleeves
+
+    def test_maker_only_buy_with_all_the_cash_never_crosses_the_spread(self):
+        ex = FakeLiveExchange(self.candles, self.clock, liquidity="100")
+        note, sleeves = self.buy(ex)
+        types = {o["type"] for o in ex.orders.values()}
+        self.assertEqual(types, {"LIMIT_MAKER"})                 # no IOC / taker order
+        self.assertTrue(all(D(o["price"]) == D("100.00") for o in ex.orders.values()))   # at the bid, not the ask
+        t = self.store.current_trade("manual")
+        self.assertAlmostEqual(t["qty"], 25.0, places=1)         # $2,500 at $100: the $320 sleeve cap didn't apply
+        self.assertIn("bought", note)
+        self.assertEqual(sum(float(s.cash) for s in sleeves if s.kind != "manual"), 0.0)
+
+    def test_part_fill_returns_the_unspent_cash_to_the_sleeves(self):
+        ex = FakeLiveExchange(self.candles, self.clock, liquidity="10")     # only $1,000 for sale at the bid
+        note, sleeves = self.buy(ex, wait_min=5)
+        self.assertAlmostEqual(self.store.current_trade("manual")["qty"], 10.0)
+        self.assertIn("not spent went back", note)
+        rule = [s for s in sleeves if s.kind != "manual"]
+        self.assertAlmostEqual(sum(float(s.cash) for s in rule), 1500, delta=0.05)
+        self.assertEqual([float(s.cash) for s in rule], [750.0, 750.0])     # two sleeves of 1,250, each lent 500
+        self.assertEqual({o["type"] for o in ex.orders.values()}, {"LIMIT_MAKER"})
+        lent = self.store.get("manual.from")
+        self.assertAlmostEqual(sum(lent.values()), 1000, delta=0.05)
 
 
 class TestEnsemble(unittest.TestCase):

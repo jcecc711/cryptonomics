@@ -37,7 +37,8 @@ markets. It gives up growth in strong bull runs.
     python -m bot.run loop          # keep running: 5 minutes past every hour
     python -m bot.run web           # dashboard app at http://127.0.0.1:8080
     python -m bot.run status
-    python -m bot.run manual-buy 2000     # practice only: buy $2,000 of BTC by hand ("all" = all the cash)
+    python -m bot.run manual-buy 2000     # buy $2,000 of BTC by hand ("all" = all the cash); maker-only:
+                                          # posts at the best bid, no spread, 0% fee, up to 30 min (--wait N, --now)
     python -m bot.run manual-sell         # sell the manual position, cash goes back to the sleeves
     python -m bot.run manual-stop 62000   # sell it if a 1h candle closes below 62,000 ("off" removes)
 
@@ -65,7 +66,7 @@ markets. It gives up growth in strong bull runs.
   the 4h DI+ crosses back above DI-; `bench/mtf_switch.py`). No orders: it marks
   the short every hour with estimated fees and funding, alerts on open / close,
   and shows on the dashboard and in `status`.
-- **Manual position** (practice account): `manual-buy <dollars>` borrows that much
+- **Manual position** (practice or live): `manual-buy <dollars>` borrows that much
   cash from the sleeves sitting in cash (in proportion to their cash) and buys BTC
   against the live book. The rules never sell it; `manual-sell` sells it and hands
   the cash back in the same proportions. It counts in the account total and shows
