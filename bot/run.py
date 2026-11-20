@@ -560,16 +560,24 @@ def main(argv=None):
     if cmd == "manual-stop":
         if len(argv) < 2:
             raise SystemExit("Usage: python -m bot.run manual-stop <price | off>, e.g. manual-stop 62000")
+        if argv[1].lower() == "off":            # the open position's stop, and any stop waiting on a buy trigger
+            had = bool(store.get(f"{MANUAL}.stop"))
+            store.set(f"{MANUAL}.stop", None)
+            trigs = buy_triggers(store)
+            pending = sum(1 for x in trigs if x.get("stop"))
+            if trigs:
+                store.set(f"{MANUAL}.buy_trigger", [{k: v for k, v in x.items() if k != "stop"} for x in trigs])
+            print(("Stop removed from the manual position: it is sold only by hand. " if had else
+                   "The manual position has no stop. " if store.current_trade(MANUAL) else "")
+                  + (f"Removed the stop from {pending} waiting buy trigger(s)." if pending else
+                     "No buy trigger had a stop." if trigs else ""))
+            return
         if not store.current_trade(MANUAL):
             raise SystemExit("There's no manual position to put a stop on.")
-        if argv[1].lower() == "off":
-            store.set(f"{MANUAL}.stop", None)
-            print("Stop removed: the manual position is sold only by hand.")
-        else:
-            stop = float(argv[1].replace("$", "").replace(",", ""))
-            store.set(f"{MANUAL}.stop", stop)
-            print(f"Stop set: the manual position is sold if a 1h candle closes below {stop:,.2f} "
-                  "(checked every hour at :05).")
+        stop = float(argv[1].replace("$", "").replace(",", ""))
+        store.set(f"{MANUAL}.stop", stop)
+        print(f"Stop set: the manual position is sold if a 1h candle closes below {stop:,.2f} "
+              "(checked every hour at :05).")
         return
     if cmd in ("manual-buy", "manual-sell"):
         with trade_lock(cfg):
