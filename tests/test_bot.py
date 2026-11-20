@@ -777,6 +777,37 @@ class TestManualPosition(unittest.TestCase):
         self.assertAlmostEqual(acct["held"], self.store.current_trade("manual")["qty"], places=6)
         self.assertLess(acct["cash"], 1)                    # all of it went into BTC
 
+    def test_buy_trigger_buys_once_on_a_close_above_and_sets_the_stop(self):
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)
+        last = float(self.candles.close.iloc[-1])           # the fake serves these candles for 5m too
+        self.store.set("manual.buy_trigger", {"price": last * 1.01, "amount": "all", "wait": 5})
+        with FakeTime(self.clock):
+            self.assertIsNone(run.buy_trigger_check(self.cfg, self.client, sleeves, self.store))   # still below
+        self.assertIsNone(self.store.current_trade("manual"))
+        self.store.set("manual.buy_trigger", {"price": last * 0.99, "amount": "all", "wait": 5, "stop": last * 0.9})
+        with FakeTime(self.clock):
+            msg = run.buy_trigger_check(self.cfg, self.client, sleeves, self.store)
+        self.assertIn("Buy trigger", msg)
+        self.assertIsNotNone(self.store.current_trade("manual"))
+        self.assertIsNone(self.store.get("manual.buy_trigger"))                    # fires once
+        self.assertAlmostEqual(self.store.get("manual.stop"), last * 0.9)
+        s = web.status(self.cfg, self.store, threading.Lock())
+        self.assertEqual(s["buy_trigger"], [])
+
+    def test_dip_and_breakout_triggers_one_cancels_the_other(self):
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)
+        bar = self.candles.iloc[-1]
+        trigs = [{"price": float(bar.close) * 1.05, "side": "above", "amount": "all", "wait": 5},
+                 {"price": float(bar.low) * 1.001, "side": "below", "amount": "all", "wait": 5}]   # the low touched it
+        self.store.set("manual.buy_trigger", trigs)
+        with FakeTime(self.clock):
+            msg = run.buy_trigger_check(self.cfg, self.client, sleeves, self.store)
+        self.assertIn("traded down to", msg)
+        self.assertIsNotNone(self.store.current_trade("manual"))
+        self.assertIsNone(self.store.get("manual.buy_trigger"))          # the breakout trigger is gone too
+
     def test_limits(self):
         _, sleeves, _ = run.make(self.cfg, self.client, self.store)
         self.run_once(sleeves)

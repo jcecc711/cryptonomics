@@ -294,6 +294,7 @@ def status(cfg, store, lock):
             cash, btc = store.get(f"{name}.cash"), store.get(f"{name}.btc")
             sleeves.append({
                 "stop": store.get("manual.stop") if kind == "manual" else None,
+                "buy_trigger": store.get("manual.buy_trigger") if kind == "manual" else None,
                 # balances right now (the equity snapshots are hourly; a manual buy moves cash in between)
                 "balance": {"cash": float(cash), "btc": float(btc or 0)} if cash is not None else None,
                 "cash_since": since,
@@ -314,7 +315,8 @@ def status(cfg, store, lock):
             "short_tracker": store.get("short_tracker") if cfg.short_tracker else None,
             "sleeves": sleeves,
             "equity": total[-2000:],
-            "start": total[0] if total else None,      # the account's first reading, for gains since the start
+            "start": total[0] if total else None,
+            "buy_trigger": (lambda t: [] if not t else (t if isinstance(t, list) else [t]))(store.get("manual.buy_trigger")),      # the account's first reading, for gains since the start
             "watchlist": store.get("watchlist") or DEFAULT_WATCHLIST,
             "trades": store.rows("SELECT * FROM trades ORDER BY id DESC"),
             "orders": store.rows("SELECT * FROM orders ORDER BY id DESC LIMIT 100"),

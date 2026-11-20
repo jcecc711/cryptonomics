@@ -418,6 +418,39 @@ def track_short(cfg, client, store, cache, price, ts):
                     tags=("chart_with_upwards_trend",))
 
 
+def buy_triggers(store):
+    t = store.get(f"{MANUAL}.buy_trigger")
+    return [] if not t else (t if isinstance(t, list) else [t])
+
+
+def buy_trigger_check(cfg, client, sleeves, store):
+    """Buy (maker-only) when a trigger set with manual-buy-trigger fires, checked on the last closed 5-minute
+    candle: "above" fires on a close above the price (a breakout), "below" when the low touches it (a dip).
+    Triggers are one-cancels-the-other: the first to fire buys and clears the rest."""
+    trigs = buy_triggers(store)
+    if not trigs or store.current_trade(MANUAL):
+        return None
+    k = client.klines(cfg.symbol, "5m", limit=3)
+    c = k.iloc[-1]
+    when = k.index[-1]
+    hit = next((t for t in trigs if (float(c.close) > t["price"] if t.get("side", "above") == "above"
+                                    else float(c.low) <= t["price"])), None)
+    if not hit:
+        return None
+    store.set(f"{MANUAL}.buy_trigger", None)             # fires once, and cancels the other trigger
+    note = manual_buy(cfg, client, sleeves, store, hit.get("amount", "all"), maker_only=True,
+                      wait_min=int(hit.get("wait", 30)))
+    if hit.get("stop") and store.current_trade(MANUAL):
+        store.set(f"{MANUAL}.stop", float(hit["stop"]))
+        note += f"; stop set at {float(hit['stop']):,.2f}"
+    how = (f"closed at {float(c.close):,.2f}, above {hit['price']:,.2f}" if hit.get("side", "above") == "above"
+           else f"traded down to {float(c.low):,.2f}, at or below {hit['price']:,.2f}")
+    msg = f"Buy trigger: the 5m candle from {when:%Y-%m-%d %H:%M} UTC {how}. {note}"
+    log.warning("manual position %s", msg)
+    notify.send(cfg, f"Buy trigger filled ({cfg.mode.upper()})", msg, priority="high", tags=("chart_with_upwards_trend",))
+    return msg
+
+
 def loop(cfg, client, sleeves, store, every_sec=3600):
     while True:
         try:
@@ -429,7 +462,16 @@ def loop(cfg, client, sleeves, store, every_sec=3600):
             notify.once_per_change(cfg, store, "run", type(e).__name__, "Bot run failed",
                                    f"{e}\nIt will retry every hour; check the server log.", priority="high",
                                    tags=("warning",))
-        time.sleep(every_sec - time.time() % every_sec + 300)  # 5 minutes past each hour
+        next_run = time.time() - time.time() % every_sec + every_sec + 300   # 5 minutes past each hour
+        while next_run - time.time() > 60:              # meanwhile, a buy trigger is watched every 5 minutes
+            time.sleep(min(300, next_run - time.time() - 30))
+            if store.get(f"{MANUAL}.buy_trigger"):
+                try:
+                    with trade_lock(cfg):
+                        buy_trigger_check(cfg, client, sleeves, store)
+                except Exception:
+                    log.exception("buy trigger check failed")
+        time.sleep(max(0, next_run - time.time()))
 
 
 def main(argv=None):
@@ -483,6 +525,38 @@ def main(argv=None):
             print(f"{c['id']:24} {c['name']:24} start ${r['start_usd']:>12,.0f}  now ${r['value']:>12,.2f}  "
                   f"{100 * r['ret']:+6.2f}%  in BTC {100 * r['in_btc']:.0f}%  since {r['inception']}")
         return
+    if cmd == "manual-buy-trigger":
+        if len(argv) < 2:
+            raise SystemExit("Usage: python -m bot.run manual-buy-trigger <price | off> [all | <dollars>] "
+                             "[--stop PRICE] [--wait MINUTES]\n  buys (maker-only) once a 5-minute candle closes above the price")
+        if argv[1].lower() == "off":
+            store.set(f"{MANUAL}.buy_trigger", None)
+            print("Buy triggers removed.")
+            return
+        if store.current_trade(MANUAL):
+            raise SystemExit("There's already a manual position; sell it first or set its stop with manual-stop.")
+        bid, ask = client.book(cfg.symbol)
+        mid = float((bid + ask) / 2)
+        price = float(argv[1].replace("$", "").replace(",", ""))
+        side = "above" if price > mid else "below"         # above the market: a breakout; below: a dip
+        rest = [a for a in argv[2:] if not a.startswith("--") and not a.replace(".", "").isdigit()
+                or a == "all"]
+        nums = [a for a in argv[2:] if a.replace(".", "").replace(",", "").replace("$", "").isdigit()]
+        flags_vals = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a in ("--stop", "--wait")}
+        amounts = [a for a in rest + nums if a not in flags_vals]
+        amount = (amounts[0] if amounts else "all").replace("$", "").replace(",", "")
+        trig = {"price": price, "side": side, "amount": amount,
+                "wait": int(argv[argv.index("--wait") + 1]) if "--wait" in argv else 30}
+        if "--stop" in argv:
+            trig["stop"] = float(argv[argv.index("--stop") + 1].replace("$", "").replace(",", ""))
+        trigs = [t for t in buy_triggers(store) if t.get("side", "above") != side] + [trig]   # one per side
+        store.set(f"{MANUAL}.buy_trigger", trigs)
+        rule = ("a 5-minute candle closes above" if side == "above" else "price trades down to")
+        print(f"Buy trigger set: buys {amount} ({cfg.mode}) when {rule} {price:,.2f} (BTC now {mid:,.2f}); "
+              "checked every 5 minutes." + (f" Then a stop at {trig['stop']:,.2f}." if "stop" in trig else ""))
+        if len(trigs) > 1:
+            print("Both triggers are set; whichever fires first buys and cancels the other.")
+        return
     if cmd == "manual-stop":
         if len(argv) < 2:
             raise SystemExit("Usage: python -m bot.run manual-stop <price | off>, e.g. manual-stop 62000")
@@ -527,6 +601,10 @@ def main(argv=None):
             print(f"{s.name}: cash {s.cash:.2f}, BTC {s.btc}")
         if store.get(f"{MANUAL}.stop"):
             print(f"manual stop: sells if a 1h candle closes below {store.get(f'{MANUAL}.stop'):,.2f}")
+        for trig in buy_triggers(store):
+            rule = "a 5m candle closes above" if trig.get("side", "above") == "above" else "price trades down to"
+            print(f"buy trigger: buys {trig['amount']} when {rule} {trig['price']:,.2f}"
+                  + (f", then a stop at {trig['stop']:,.2f}" if trig.get("stop") else ""))
         st = store.get(shorts.KEY)
         if st:
             pos = st["open"]

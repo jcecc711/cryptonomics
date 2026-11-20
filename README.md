@@ -41,6 +41,9 @@ markets. It gives up growth in strong bull runs.
                                           # posts at the best bid, no spread, 0% fee, up to 30 min (--wait N, --now)
     python -m bot.run manual-sell         # sell the manual position, cash goes back to the sleeves
     python -m bot.run manual-stop 62000   # sell it if a 1h candle closes below 62,000 ("off" removes)
+    python -m bot.run manual-buy-trigger 59600 --stop 58600   # buy when a 5m candle closes above (breakout)
+    python -m bot.run manual-buy-trigger 59200 --stop 58200   # buy when price dips to (below the market)
+                                          # both set: first to fire buys, cancels the other; "off" removes
 
 - **Paper mode** (default) simulates orders against the live Binance.US order
   book, starting with `BOT_PAPER_START_USD` split equally between the sleeves.

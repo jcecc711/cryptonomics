@@ -704,7 +704,10 @@ function renderBuyingPower(s, px) {
   // BTC the sleeves' cash buys now vs. at the price when each went to cash
   const cashOf = sl => (sl.balance || sl.last || {}).cash || 0;
   const box = $("#bp"), rows = s.sleeves.filter(sl => !sl.trade && sl.cash_since && cashOf(sl) > 1 && sl.cash_since.price);
-  if (!rows.length || !px) { box.hidden = true; return; }
+  const bts = s.buy_trigger || [], trig = bts.length ? `<span class="tag" style="background:#0ca678" title="Checked every 5 minutes; the first to fire cancels the other">BUY TRIGGER${bts.length > 1 ? "S" : ""}</span> ` +
+    bts.map(bt => `<span>buys ${esc(bt.amount)} ${bt.side === "below" ? "on a dip to" : "on a 5-min close above"} <b>${price(bt.price)}</b>${bt.stop ? `, then stop ${price(bt.stop)}` : ""}
+    <span class="muted">(${pct(bt.price / px - 1, 1)} from here)</span></span>`).join(" <b>or</b> ") : "";
+  if (!rows.length || !px) { box.hidden = !trig; box.innerHTML = trig; return; }
   const cash = rows.reduce((a, sl) => a + cashOf(sl), 0);
   const then = rows.reduce((a, sl) => a + cashOf(sl) / sl.cash_since.price, 0), now = cash / px, ch = now / then - 1;
   const ref = cash / then, early = rows.map(sl => sl.cash_since.time).sort()[0];
@@ -713,7 +716,7 @@ function renderBuyingPower(s, px) {
   box.innerHTML = `<span class="lab">Buying power</span>
     <span>Your <b>${usd(cash)}</b> in cash buys <span class="big">${now.toFixed(4)} BTC</span> now</span>
     <span class="muted">vs ${then.toFixed(4)} BTC when it went to cash (BTC ${price(ref)}${rows.length > 1 ? " avg" : ""}, since ${new Date(toSec(early) * 1000).toLocaleDateString()})</span>
-    <span class="big ${cls(ch)}" title="${esc(tip)}">${ch >= 0 ? "+" : ""}${(100 * ch).toFixed(1)}% ${ch >= 0 ? "more" : "less"} BTC</span>`;
+    <span class="big ${cls(ch)}" title="${esc(tip)}">${ch >= 0 ? "+" : ""}${(100 * ch).toFixed(1)}% ${ch >= 0 ? "more" : "less"} BTC</span>${trig ? "<br>" + trig : ""}`;
 }
 
 function renderOverview() {
