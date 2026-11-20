@@ -237,6 +237,10 @@ class LockedStore:
         with self.lock:
             return self.store.rows(*a)
 
+    def get(self, *a):
+        with self.lock:
+            return self.store.get(*a)
+
 
 STABLE = {"USD": 1.0, "USDT": 1.0, "USDC": 1.0}
 

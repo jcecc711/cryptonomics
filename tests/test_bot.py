@@ -765,6 +765,18 @@ class TestManualPosition(unittest.TestCase):
         self.assertAlmostEqual(sum(float(x.cash) for x in sleeves), 1000, delta=2)   # cash back with the sleeves
         self.run_once(sleeves)                                # and the next run is normal
 
+    def test_portfolio_shows_the_buy_before_the_next_hourly_run(self):
+        from bot import portfolio
+        _, sleeves, _ = run.make(self.cfg, self.client, self.store)
+        self.run_once(sleeves)
+        with FakeTime(self.clock):
+            run.manual_buy(self.cfg, self.client, sleeves, self.store, "all")
+        portfolio._cache.clear()
+        r = portfolio.portfolio(self.client, self.store, self.cfg, self.cfg.symbol, False)
+        acct = next(p for p in r["periods"] if p["key"] == "START")["account"]
+        self.assertAlmostEqual(acct["held"], self.store.current_trade("manual")["qty"], places=6)
+        self.assertLess(acct["cash"], 1)                    # all of it went into BTC
+
     def test_limits(self):
         _, sleeves, _ = run.make(self.cfg, self.client, self.store)
         self.run_once(sleeves)

@@ -1747,7 +1747,7 @@ const Portfolio = (() => {
         <div class="s">${sgn(100 * ret, 1)}% from ${usd(a ? a.value - main.usd : 10000, 2)} at the start</div></div>
       <div class="btc"><div class="t">${esc(u)} stack</div>
         <div class="v">${main.units_end.toFixed(dec)} ${esc(u)} <span class="chg">(${sgn(uCh, dec)} ${uCh >= 0 ? "gain" : "loss"})</span></div>
-        <div class="s">${sgn(100 * main.stack, 1)}% from ${main.units_start.toFixed(dec)} ${esc(u)} at the start${a ? "" : " (in value)"}</div></div>
+        <div class="s">${sgn(100 * main.stack, 1)}% from ${main.units_start.toFixed(dec)} ${esc(u)} at the start${a ? ` · holding ${a.held.toFixed(dec)} ${esc(u)} + ${usd(a.cash, 2)} cash` : " (in value)"}</div></div>
       <div class="foot">${h ? `Just holding ${esc(u)}: <b>${sgn(100 * h.ret, 1)}%</b> (${price(h.price_start)} → ${price(h.price_end)})` : ""}${a && s ? ` · rules alone (simulated): ${sgn(100 * s.ret, 1)}%` : ""}${s && s.dd != null && !a ? ` · worst drop ${sgn(100 * s.dd, 1)}%` : ""}</div>
     </div>`;
   }

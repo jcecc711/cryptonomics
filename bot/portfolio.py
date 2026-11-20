@@ -138,8 +138,9 @@ def max_drawdown(series, a, b):
     return float((w / w.cummax() - 1).min()) if len(w) else None
 
 
-def build(symbol, frames, price, bear_filter, account=None, unit=None, name=None, sleeves_label=""):
-    sc = strategy_curve(frames, bear_filter)
+def build(symbol, frames, price, bear_filter, account=None, unit=None, name=None, sleeves_label="", holdings=None):
+    """holdings: the account's (cash, btc) right now; without it the latest hourly snapshot is used."""
+    sc = _cached(("sc", symbol, bear_filter), 600, lambda: strategy_curve(frames, bear_filter))   # the slow part
     daily = next(iter(frames.values())) if frames else None
     px = (daily.close.resample("1D").last().dropna() if daily is not None and len(daily) else pd.Series(dtype=float))
     if price and len(px):
@@ -168,10 +169,11 @@ def build(symbol, frames, price, bear_filter, account=None, unit=None, name=None
             if len(acc):
                 v0, q0 = float(acc.value.iloc[0]), float(acc.price.iloc[0])
                 q1 = float(price or account.price.iloc[-1])
-                v1 = float(account.cash.iloc[-1] + account.btc.iloc[-1] * q1)   # latest holdings at the live price
+                cash, held = holdings if holdings else (float(account.cash.iloc[-1]), float(account.btc.iloc[-1]))
+                v1 = cash + held * q1                          # what the account holds now, at the live price
                 u0, u1 = v0 / q0, v1 / q1
                 row["account"] = {"ret": v1 / v0 - 1, "usd": v1 - v0, "value": v1, "units_start": u0,
-                                  "units_end": u1, "stack": u1 / u0 - 1}
+                                  "units_end": u1, "stack": u1 / u0 - 1, "held": held, "cash": cash}
         out.append(row)
     return {"symbol": symbol, "name": name or symbol, "unit": unit or symbol, "price": price,
             "sleeves": sc[1] if sc else 0, "sleeves_label": sleeves_label,
@@ -180,6 +182,9 @@ def build(symbol, frames, price, bear_filter, account=None, unit=None, name=None
 
 
 def portfolio(client, store, cfg, symbol, is_stock, price=None):
+    if not is_stock and symbol == cfg.symbol:
+        return _account_portfolio(client, store, cfg, symbol)   # never cached: it shows the live account
+
     def load():
         if is_stock:
             frames = {tf: stock_history(symbol, tf) for tf in STOCK_TFS}
@@ -199,3 +204,20 @@ def portfolio(client, store, cfg, symbol, is_stock, price=None):
         return build(symbol, frames, px, symbol == cfg.symbol and cfg.bear_filter == "halving", account,
                      unit=base, name=base, sleeves_label="DI + ADX-14 on 4h / 8h / 12h / 1d")
     return _cached(("portfolio", symbol), 600, load)
+
+
+def _account_portfolio(client, store, cfg, symbol):
+    frames = {tf: crypto_history(client, symbol, tf) for tf in ("1d",) + tuple(t for t in CRYPTO_TFS if t != "1d")}
+    bid, ask = client.book(symbol)
+    px = float((bid + ask) / 2)
+    rows = store.rows("SELECT ts, cash, btc, price, value FROM equity WHERE strategy='total' ORDER BY ts")
+    account, holdings = None, None
+    if rows:
+        account = pd.DataFrame(rows)
+        account.index = pd.to_datetime(account.pop("ts"))
+        names = [n for n, _, _ in cfg.sleeve_specs()] + ["manual"]
+        holdings = (sum(float(store.get(f"{n}.cash") or 0) for n in names),
+                    sum(float(store.get(f"{n}.btc") or 0) for n in names))
+    base = symbol[:-4] if symbol.endswith(("USDT", "USDC")) else symbol[:-3]
+    return build(symbol, frames, px, cfg.bear_filter == "halving", account, unit=base, name=base,
+                 sleeves_label="DI + ADX-14 on 4h / 8h / 12h / 1d", holdings=holdings)
